@@ -23,11 +23,110 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from applications.fv_abl.workflow import _models, load_workflow
-from tools.prolong_pressure_driven_checkpoint import (
-    _resample_axis,
-    prolong_cell_field,
-    prolong_vertical_faces,
-)
+
+
+def _indices_and_weights(
+    source_size: int,
+    target_size: int,
+    *,
+    cell_centred: bool,
+    periodic: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return source bracketing indices for uniform physical coordinates."""
+
+    if source_size < 2 or target_size < source_size:
+        raise ValueError("prolongation requires a larger target axis")
+    if target_size % source_size:
+        raise ValueError("target axes must be integer refinements of source axes")
+    if cell_centred:
+        coordinate = (
+            (np.arange(target_size, dtype=np.float64) + 0.5)
+            * source_size
+            / target_size
+            - 0.5
+        )
+    else:
+        coordinate = (
+            np.arange(target_size + 1, dtype=np.float64)
+            * source_size
+            / target_size
+        )
+    lower_unbounded = np.floor(coordinate).astype(np.int64)
+    weight = coordinate - lower_unbounded
+    upper_unbounded = lower_unbounded + 1
+    array_size = source_size if cell_centred else source_size + 1
+    if periodic:
+        lower = lower_unbounded % array_size
+        upper = upper_unbounded % array_size
+    else:
+        lower = np.clip(lower_unbounded, 0, array_size - 1)
+        upper = np.clip(upper_unbounded, 0, array_size - 1)
+        weight = np.where(lower == upper, 0.0, weight)
+    return lower, upper, weight
+
+
+def _resample_axis(
+    values: np.ndarray,
+    target_size: int,
+    *,
+    axis: int,
+    cell_centred: bool = True,
+    periodic: bool = False,
+) -> np.ndarray:
+    source_array_size = values.shape[axis]
+    source_size = source_array_size if cell_centred else source_array_size - 1
+    lower, upper, weight = _indices_and_weights(
+        source_size,
+        target_size,
+        cell_centred=cell_centred,
+        periodic=periodic,
+    )
+    shape = [1] * values.ndim
+    shape[axis] = weight.size
+    weight = weight.reshape(shape)
+    lo = np.take(values, lower, axis=axis)
+    hi = np.take(values, upper, axis=axis)
+    return lo + (hi - lo) * weight.astype(values.dtype)
+
+
+def prolong_cell_field(
+    values: np.ndarray,
+    target_shape: tuple[int, int, int],
+) -> np.ndarray:
+    """Trilinearly prolong a ``(z, y, x)`` cell-centred field."""
+
+    if values.ndim != 3:
+        raise ValueError("cell field must have shape (z, y, x)")
+    target_z, target_y, target_x = target_shape
+    result = _resample_axis(values, target_x, axis=2, periodic=True)
+    result = _resample_axis(result, target_y, axis=1, periodic=True)
+    result = _resample_axis(result, target_z, axis=0, periodic=False)
+    return result
+
+
+def prolong_vertical_faces(
+    upper_faces: np.ndarray,
+    lower_boundary: np.ndarray,
+    target_shape: tuple[int, int, int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Prolong staggered vertical velocity and return upper/lower storage."""
+
+    if upper_faces.ndim != 3 or lower_boundary.shape != upper_faces.shape[1:]:
+        raise ValueError(
+            "vertical-face checkpoint arrays have inconsistent shapes"
+        )
+    target_z, target_y, target_x = target_shape
+    full_faces = np.concatenate((lower_boundary[None, ...], upper_faces), axis=0)
+    result = _resample_axis(full_faces, target_x, axis=2, periodic=True)
+    result = _resample_axis(result, target_y, axis=1, periodic=True)
+    result = _resample_axis(
+        result,
+        target_z,
+        axis=0,
+        cell_centred=False,
+        periodic=False,
+    )
+    return result[1:], result[0]
 
 
 def prolong_periodic_face_field(
@@ -132,10 +231,10 @@ def prolong_fv_checkpoint(
 
         import jax
 
-        dtype_name = target_workflow.case.physical.pressure.dtype
+        dtype_name = target_workflow.case.physical.dtype
         jax.config.update("jax_enable_x64", dtype_name == "float64")
         import jax.numpy as jnp
-        from jaxwind.fv import (
+        from jaxwind import (
             StaggeredVelocity,
             build_pressure_poisson,
             divergence,
@@ -212,7 +311,7 @@ def prolong_fv_checkpoint(
         step=source_step,
     )
     report: dict[str, object] = {
-        "schema": "jaxwind.fv-checkpoint-prolongation.v1",
+        "schema": "jaxwind.checkpoint-prolongation.v1",
         "source_checkpoint": str(source_checkpoint),
         "source_config": str(source_config),
         "target_config": str(target_config),
@@ -357,10 +456,10 @@ def prolong_low_mach_checkpoint(
 
     import jax
 
-    dtype_name = target_workflow.case.physical.pressure.dtype
+    dtype_name = target_workflow.case.physical.dtype
     jax.config.update("jax_enable_x64", dtype_name == "float64")
     import jax.numpy as jnp
-    from jaxwind.fv import (
+    from jaxwind import (
         StaggeredVelocity,
         build_pressure_poisson,
         continuity_residual,
@@ -439,7 +538,7 @@ def prolong_low_mach_checkpoint(
         step=source_step,
     )
     report: dict[str, object] = {
-        "schema": "jaxwind.fv-low-mach-checkpoint-prolongation.v1",
+        "schema": "jaxwind.low-mach-checkpoint-prolongation.v1",
         "source_checkpoint": str(source_checkpoint),
         "source_config": str(source_config),
         "target_config": str(target_config),

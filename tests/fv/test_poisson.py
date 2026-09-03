@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     FREE_SLIP,
     OPEN,
     Boundaries,

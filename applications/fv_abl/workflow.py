@@ -12,10 +12,7 @@ from typing import Any
 
 import numpy as np
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib
+import tomllib
 
 from .config import FiniteVolumeCase, load_fv_abl
 from .diagnostics import initial_fields
@@ -131,7 +128,7 @@ class FiniteVolumeWorkflow:
     def resolved(self) -> dict[str, Any]:
         grid = self.case.physical.physical_grid
         return {
-            "schema": "jaxwind.fv-precursor-main.v1",
+            "schema": "jaxwind.precursor-main.v1",
             "case": resolved(self.case),
             "warmup": {
                 "pressure_backend": "fft",
@@ -732,7 +729,7 @@ def _models(
     evolve_scalar: bool = True,
 ):
     """Compose identical physical closures for each workflow stage."""
-    from jaxwind.fv import (
+    from jaxwind import (
         AnisotropicMinimumDissipation,
         CELL_AVERAGE,
         LOCAL,
@@ -760,15 +757,13 @@ def _models(
             evolved[1],
             configuration["coriolis_horizontal_s"],
         )
-    coupled = case.model.surface_transfer
-    if not hasattr(coupled, "scalar_roughness_length"):
-        coupled = None
+    coupled = case.surface_scalar
     wall = None
     surface = None
     if coupled is None:
         wall = MoninObukhovWall(
             configuration["roughness_length_m"],
-            von_karman=case.model.momentum.wall.von_karman,
+            von_karman=case.von_karman,
             sampling=CELL_AVERAGE,
             averaging=LOCAL,
         )
@@ -782,7 +777,7 @@ def _models(
             x_velocity_offset=offset_u,
             y_velocity_offset=offset_v,
             buoyancy_coefficient=coefficient,
-            von_karman=case.model.momentum.wall.von_karman,
+            von_karman=case.von_karman,
             positive_zeta_momentum_slope=coupled.positive_zeta_momentum_slope,
             positive_zeta_scalar_slope=coupled.positive_zeta_scalar_slope,
             negative_zeta_momentum_coefficient=(
@@ -910,7 +905,7 @@ def _build_turbine_forcing(workflow: FiniteVolumeWorkflow):
     if turbine is None:
         return None
     from jaxwind.domain import ScaleSystem
-    from jaxwind.fv import build_adbem_forcing, build_actuator_line_forcing
+    from jaxwind import build_adbem_forcing, build_actuator_line_forcing
 
     scales = ScaleSystem(1.0, 1.0)
     grid = workflow.case.physical.physical_grid
@@ -937,7 +932,7 @@ def _combine_forcings(*forcings):
         return None
     if len(active) == 1:
         return active[0]
-    from jaxwind.fv import StaggeredVelocity
+    from jaxwind import StaggeredVelocity
 
     def combined(velocity, time):
         total = active[0](velocity, time)
@@ -954,7 +949,7 @@ def _combine_forcings(*forcings):
 
 
 def _initial_periodic(configured: FiniteVolumeCase, jax, jnp):
-    from jaxwind.fv import (
+    from jaxwind import (
         StaggeredVelocity,
         build_pressure_poisson,
         initial_atmospheric_solution,
@@ -969,19 +964,19 @@ def _initial_periodic(configured: FiniteVolumeCase, jax, jnp):
     poisson = build_pressure_poisson(
         grid,
         backend="fft",
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
     )
     velocity, _ = project(velocity, poisson, 1.0)
     return initial_atmospheric_solution(
         grid,
         velocity,
         scalar,
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
     )
 
 
 def _periodic_advance(configured: FiniteVolumeCase):
-    from jaxwind.fv import (
+    from jaxwind import (
         build_atmospheric_run,
         build_atmospheric_step,
         build_pressure_poisson,
@@ -995,7 +990,7 @@ def _periodic_advance(configured: FiniteVolumeCase):
     poisson = build_pressure_poisson(
         grid,
         backend="fft",
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
     )
     step = build_atmospheric_step(
         grid,
@@ -1029,7 +1024,7 @@ def _save_solution(path: Path, solution) -> None:
 
 
 def _load_solution(path: Path, jnp):
-    from jaxwind.fv import AtmosphericSolution, StaggeredVelocity
+    from jaxwind import AtmosphericSolution, StaggeredVelocity
 
     if not path.exists():
         raise FileNotFoundError(f"missing workflow checkpoint: {path}")
@@ -1064,7 +1059,7 @@ def _run_periodic_blocks(
 ):
     import jax
     import jax.numpy as jnp
-    from jaxwind.fv import courant_number
+    from jaxwind import courant_number
 
     initial_time = float(solution.time)
     completed = 0
@@ -1104,7 +1099,7 @@ def _run_adaptive_periodic_blocks(
 ):
     import jax
     import jax.numpy as jnp
-    from jaxwind.fv import courant_number, stable_timestep
+    from jaxwind import courant_number, stable_timestep
 
     initial_time = float(solution.time)
     target_time = initial_time + duration_seconds
@@ -1165,7 +1160,7 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
 
     case = workflow.case.physical
     options = workflow.case.options
-    jax.config.update("jax_enable_x64", case.pressure.dtype == "float64")
+    jax.config.update("jax_enable_x64", case.dtype == "float64")
     import jax.numpy as jnp
 
     restart = workflow.options.warmup_restart_checkpoint
@@ -1174,7 +1169,7 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         if restart is None
         else _load_solution(restart, jnp)
     )
-    from jaxwind.fv import validate
+    from jaxwind import validate
 
     validate(solution.velocity, case.physical_grid)
     validate(solution.momentum_tendency, case.physical_grid)
@@ -1214,7 +1209,7 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
             "maximum_sampled_cfl": maximum_cfl,
         }
     else:
-        from jaxwind.fv import build_adaptive_atmospheric_run
+        from jaxwind import build_adaptive_atmospheric_run
 
         adaptive_advance = build_adaptive_atmospheric_run(
             step,
@@ -1253,7 +1248,7 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
 def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
     import jax
     import jax.numpy as jnp
-    from jaxwind.fv import (
+    from jaxwind import (
         build_adaptive_atmospheric_run,
         extract_inflow_plane,
         stable_timestep,
@@ -1304,32 +1299,32 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
         "x_velocity": np.lib.format.open_memmap(
             directory / "x_velocity.npy",
             mode="w+",
-            dtype=case.pressure.dtype,
+            dtype=case.dtype,
             shape=(samples, grid.nz, grid.ny),
         ),
         "y_velocity": np.lib.format.open_memmap(
             directory / "y_velocity.npy",
             mode="w+",
-            dtype=case.pressure.dtype,
+            dtype=case.dtype,
             shape=(samples, grid.nz, grid.ny),
         ),
         "z_velocity": np.lib.format.open_memmap(
             directory / "z_velocity.npy",
             mode="w+",
-            dtype=case.pressure.dtype,
+            dtype=case.dtype,
             shape=(samples, grid.nz + 1, grid.ny),
         ),
         "scalar": np.lib.format.open_memmap(
             directory / "scalar.npy",
             mode="w+",
-            dtype=case.pressure.dtype,
+            dtype=case.dtype,
             shape=(samples, grid.nz, grid.ny),
         ),
     }
     timesteps = np.lib.format.open_memmap(
         directory / "dt_seconds.npy",
         mode="w+",
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
         shape=(samples,),
     )
     compiled: dict[int, Any] = {}
@@ -1445,7 +1440,7 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
         )
     timestep_values = np.asarray(timesteps, dtype=np.float64)
     metadata = {
-        "schema": "jaxwind.fv-inflow-plane.v2",
+        "schema": "jaxwind.inflow-plane.v2",
         "samples": samples,
         "sample_every_steps": 1,
         "variable_timestep": adaptive,
@@ -1517,7 +1512,7 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
     }
 
 def _load_inflow_block(directory: Path, start: int, stop: int, jnp):
-    from jaxwind.fv import InflowPlane
+    from jaxwind import InflowPlane
 
     return InflowPlane(
         jnp.asarray(np.load(directory / "x_velocity.npy", mmap_mode="r")[start:stop]),
@@ -1623,7 +1618,7 @@ def _capture_main_frame(
 def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
     import jax
     import jax.numpy as jnp
-    from jaxwind.fv import (
+    from jaxwind import (
         build_open_atmospheric_run,
         build_open_atmospheric_step,
         build_pressure_poisson,
@@ -1681,7 +1676,7 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         grid,
         velocity,
         scalar_field,
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
     )
     forcing = _build_turbine_forcing(workflow)
     boundaries, momentum, scalar, buoyancy, surface = _models(
@@ -1707,13 +1702,13 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         grid,
         backend="gmg",
         periodic_x=False,
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
         config=gmg_config,
     )
     turbine = workflow.turbine
     scalar_source = None
     if workflow.cooling is not None:
-        from jaxwind.fv import (
+        from jaxwind import (
             SubgridCooling,
             SubgridSpray,
             build_subgrid_cooling_source,
@@ -1748,7 +1743,7 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
                 ramp_time_s=cooling.ramp_time_s,
             )
             scalar_source, spray_forcing = build_subgrid_spray_sources(
-                grid, spray, dtype=case.pressure.dtype
+                grid, spray, dtype=case.dtype
             )
             momentum = replace(
                 momentum,
@@ -1765,7 +1760,7 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
                     standard_deviation_m=cooling.standard_deviation_m,
                     ramp_time_s=cooling.ramp_time_s,
                 ),
-                dtype=case.pressure.dtype,
+                dtype=case.dtype,
             )
     step = build_open_atmospheric_step(
         grid,

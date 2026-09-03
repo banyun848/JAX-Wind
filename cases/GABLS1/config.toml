@@ -1,5 +1,5 @@
 [case]
-name = "gabls1_lasd_32x32x32"
+name = "gabls1_fv_32x32x32"
 citation = "Beare et al. (2006), Boundary-Layer Meteorology 118, 247-272"
 initial_profile = "reference/initial_profiles.csv"
 reference_results = "reference/reference_results.json"
@@ -9,10 +9,6 @@ seed = 0
 cells = [32, 32, 32]
 lengths_m = [400.0, 400.0, 400.0]
 
-[scales]
-length_m = 400.0
-velocity_m_s = 8.0
-scalar = 1.0
 
 [flow]
 pressure_acceleration_m_s2 = [0.0, 0.0]
@@ -23,7 +19,6 @@ roughness_length_m = 0.1
 von_karman = 0.4
 
 [scalar]
-quantity = "potential_temperature"
 reference_value = 265.0
 surface_flux = 0.0
 buoyancy_acceleration_per_unit = 0.03722960151802657
@@ -37,46 +32,23 @@ roughness_length_m = 0.1
 dt_seconds = 0.25
 steps = 129600
 
-[sgs]
-filter_grid_ratio = 1.5
-test_filter_ratio = 2.0
-update_interval_steps = 5
-timescale_coefficient = 1.5
-momentum_initial_coefficient = 0.03
-momentum_minimum_coefficient = 1.0e-6
-momentum_maximum_coefficient = 0.81
-scalar_initial_coefficient = 0.03
-scalar_minimum_coefficient = 0.0
-scalar_maximum_coefficient = 1.0
-stratification_beta = 0.0
-stratification_power = 2.0
 
 [numerics]
 dtype = "float32"
-pressure_method = "spike"
-thomas_chunk = 16
-cfl_warning = 0.9
-cfl_abort = 1.1
-trajectory_cfl_abort = 1.0
 
 [diagnostics]
 sample_start_step = 115200
 sample_every_steps = 240
-log_every_steps = 1200
-checkpoint_every_steps = 12000
 reference_length_m = 100.0
 reference_velocity_m_s = 8.0
 reference_scalar = 1.0
 inversion_search_max_height_m = 250.0
 spectrum_heights_m = [25.0, 75.0, 150.0]
 
-[output]
-directory = "outputs/gabls1_lasd_32x32x32"
 
 [finite_volume]
 pressure_backend = "gmg"
 time_integration = "ab2"
-momentum_closure = "amd"
 turbulent_prandtl = 1.0
 chunk_steps = 240
 spectrum_diagnostic = "none"

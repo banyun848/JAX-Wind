@@ -9,9 +9,9 @@ The four stages are:
 
 | Stage | Physical duration | Steps | Configuration |
 | --- | ---: | ---: | --- |
-| Coarse warmup | 900 s | 180,000 | `128 × 32 × 64`, `dt=0.005 s`, pressure-driven neutral LASD |
+| Coarse warmup | 900 s | 180,000 | `128 × 32 × 64`, `dt=0.005 s`, FV neutral ABL with AMD |
 | Fine extension | 90 s | 36,000 | `256 × 64 × 128`, `dt=0.0025 s`, projected coarse state |
-| Precursor | 90 s | 36,000 | pressure-driven LASD with 11-plane HDF5 sampling every 10 steps |
+| Precursor | 90 s | 36,000 | FV precursor with one-plane sampling every step |
 | Main | 90 s | 36,000 | strict inlet overwrite, no main pressure gradient or fringe |
 
 The 900 s and 90 s durations are the DTU benchmark's 10 h and 1 h durations
@@ -26,7 +26,7 @@ The coarse accepted velocity and passive scalar are trilinearly prolonged.
 The two horizontal directions are periodic, cell-centred vertical values are
 clamped at the walls, and vertical velocity is interpolated on its native
 faces. A fine-grid pressure projection restores discrete incompressibility.
-AB2 history and LASD trajectory/averaging memory are reset because those are
+Integration history is reset because those are
 grid-dependent numerical state; the 90 s fine extension (about three outer
 turnover times) rebuilds them before precursor recording begins.
 
@@ -98,10 +98,12 @@ This fitted ABL is not the paper's uniform-flow, below-1%-turbulence baseline.
 The versioned profile reports 8.44--10.9% turbulence; the LES develops its own
 resolved turbulence during warmup rather than imposing those values directly.
 
-Run the complete workflow:
+Run the complete FV workflow:
 
 ```bash
-tools/run_hitsz_r9_chain.sh
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl.workflow \
+  cases/HITSZWindTunnel/fv_workflow.toml --overwrite
 ```
 
 The runner independently resumes interrupted coarse and fine warmups, records

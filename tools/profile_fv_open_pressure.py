@@ -32,7 +32,7 @@ def main() -> int:
         _load_solution,
         load_workflow,
     )
-    from jaxwind.fv import (
+    from jaxwind import (
         build_gmg_solver,
         divergence,
         enforce_open_velocity,
@@ -59,7 +59,7 @@ def main() -> int:
     for tolerance in arguments.tolerances:
         solve = build_gmg_solver(
             grid,
-            dtype=case.pressure.dtype,
+            dtype=case.dtype,
             periodic_x=False,
             tolerance=tolerance,
         )
@@ -74,7 +74,7 @@ def main() -> int:
         elapsed = time.perf_counter() - started
 
         applied = -divergence(
-            __import__("jaxwind.fv", fromlist=["pressure_gradient"]).pressure_gradient(
+            __import__("jaxwind", fromlist=["pressure_gradient"]).pressure_gradient(
                 pressure.reshape((grid.nz, grid.ny, grid.nx)),
                 grid,
                 periodic_x=False,

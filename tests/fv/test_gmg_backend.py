@@ -10,14 +10,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     StaggeredVelocity,
     build_pressure_poisson,
     divergence,
     pressure_gradient,
     project,
 )
-from jaxwind.fv.poisson import (
+from jaxwind.poisson import (
     _build_gmg_levels,
     _coarsening_factors,
     _prolong,

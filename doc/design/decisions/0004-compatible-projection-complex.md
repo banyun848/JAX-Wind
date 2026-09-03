@@ -1,6 +1,6 @@
 # ADR-0004: Compatible projection operator complex
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Why this is one decision
 

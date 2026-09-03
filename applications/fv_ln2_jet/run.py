@@ -15,10 +15,7 @@ SMAGORINSKY_COEFFICIENT = 0.16
 
 import numpy as np
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib
+import tomllib
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,7 +398,7 @@ def load_case(path: str | Path) -> JetCase:
 
 
 def _add_velocity(left, right):
-    from jaxwind.fv import StaggeredVelocity
+    from jaxwind import StaggeredVelocity
 
     return StaggeredVelocity(
         left.x + right.x,
@@ -411,8 +408,8 @@ def _add_velocity(left, right):
 
 
 def _cell_vector_to_faces(x, y, z, grid):
-    from jaxwind.fv import StaggeredVelocity
-    from jaxwind.fv.operators import _cells_to_faces
+    from jaxwind import StaggeredVelocity
+    from jaxwind.discretization import _cells_to_faces
 
     return StaggeredVelocity(
         _cells_to_faces(x, grid, 2, periodic=False, boundary="copy"),
@@ -457,7 +454,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
         TanhMapping,
         UniformGrid,
     )
-    from jaxwind.fv import (
+    from jaxwind import (
         AnisotropicMinimumDissipation,
         StaticSmagorinsky,
         FREE_SLIP,
@@ -487,7 +484,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
         scalar_tendency,
         zeros,
     )
-    from jaxwind.fv.cryogenic import (
+    from jaxwind.cryogenic import (
         LN2InletControl,
         LN2Jet,
         ParcelExchange,

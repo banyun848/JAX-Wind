@@ -1,6 +1,6 @@
 # ADR-0001: Static semantic field types
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

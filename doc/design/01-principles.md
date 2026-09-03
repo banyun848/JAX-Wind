@@ -1,5 +1,7 @@
 # Design principles
 
+Status: **Historical; superseded by [ADR-0017](decisions/0017-direct-finite-volume-solver.md).**
+
 ## 1. Semantics precede representation
 
 A velocity field, a face flux, and a cell-centred scalar are different semantic

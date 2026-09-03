@@ -194,7 +194,7 @@ def main() -> int:
         deficit_fraction_center_zx=deficit_fraction_vertical.astype(np.float32),
     )
     metadata = {
-        "schema": "jaxwind.fv-averaged-wake.v1",
+        "schema": "jaxwind.averaged-wake.v1",
         "source": str(root / "main_flow_frames.npz"),
         "precursor_reference": str(
             input_root / "precursor_inflow" / "x_velocity.npy"

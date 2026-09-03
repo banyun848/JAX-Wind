@@ -1,5 +1,7 @@
 # Architecture and implementation gates
 
+Status: **Historical; superseded by [ADR-0017](decisions/0017-direct-finite-volume-solver.md).**
+
 ## 1. Dependency direction
 
 The intended dependency graph points downward only:

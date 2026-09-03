@@ -1,6 +1,6 @@
 # ADR-0016: Unified JAX solver with private distribution lowering
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 Supersedes [ADR-0015](0015-unified-zslab-interpreter.md).
 

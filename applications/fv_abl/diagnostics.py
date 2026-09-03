@@ -63,7 +63,7 @@ def initial_fields(case, jax, jnp):
 
     table = load_initial_profile(case)
     grid = case.physical_grid
-    dtype = getattr(jnp, case.pressure.dtype)
+    dtype = getattr(jnp, case.dtype)
     shape = (grid.nz, grid.ny, grid.nx)
     keys = jax.random.split(jax.random.PRNGKey(case.initial_condition.seed), 3)
     u_noise = _unit_plane_noise(jax, jnp, keys[0], shape, dtype)
@@ -289,14 +289,7 @@ def profile_columns(case, accumulator) -> dict[str, np.ndarray]:
             "pressure_vertical_transport"
         ],
     }
-    rotation = case.model.momentum.rotation
-    coriolis = (
-        case.mechanical_scales.from_execution_inverse_time(
-            rotation.coriolis_parameter
-        )
-        if hasattr(rotation, "coriolis_parameter")
-        else 0.0
-    )
+    coriolis = case.coriolis_s[0]
     if coriolis != 0.0:
         columns = {
             "z_m": z,
@@ -326,13 +319,8 @@ def write_streamwise_spectra(path: Path, case, accumulator) -> None:
     selected = modes > 0.0
     modes = modes[selected]
     ustar = accumulator.ustar
-    rotation = case.model.momentum.rotation
-    coriolis = case.mechanical_scales.from_execution_inverse_time(
-        rotation.coriolis_parameter
-    )
-    scalar_flux = case.scalar_scales.from_execution_flux(
-        case.model.scalar_boundary.lower_flux
-    )
+    coriolis = case.coriolis_s[0]
+    scalar_flux = case.scalar_surface_flux
     concentration_scale = scalar_flux / ustar
     wavenumber = 2.0 * np.pi * modes / case.physical_grid.lx
     write_columns(
@@ -386,12 +374,8 @@ def bulk_metrics(case, accumulator) -> dict[str, float]:
     candidates = np.flatnonzero(search)
     inversion_index = candidates[np.argmin(total_flux[search])]
     boundary_height = float(z[inversion_index])
-    surface_flux = case.scalar_scales.from_execution_flux(
-        case.model.scalar_boundary.lower_flux
-    )
-    coefficient = case.scalar_scales.from_execution_buoyancy_coefficient(
-        case.model.buoyancy.acceleration_per_temperature
-    )
+    surface_flux = case.scalar_surface_flux
+    coefficient = case.buoyancy_acceleration_per_scalar
     buoyancy_velocity = float(
         np.cbrt(coefficient * surface_flux * boundary_height)
     )

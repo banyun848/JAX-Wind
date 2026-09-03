@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from applications.fv_ln2_jet.run import _conservative_nonnegative
 
 from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     IdealGasMixture,
     PassiveScalar,
     StaggeredVelocity,

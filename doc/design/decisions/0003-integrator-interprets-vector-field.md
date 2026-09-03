@@ -1,6 +1,6 @@
 # ADR-0003: Integrator as a higher-order interpretation
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

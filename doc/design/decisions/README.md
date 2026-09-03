@@ -6,22 +6,23 @@ links to their replacements so the reasoning is auditable.
 
 | Record | Status | Subject |
 | --- | --- | --- |
-| [ADR-0001](0001-static-semantic-field-types.md) | Accepted | Static semantic field types with construction-time validation |
-| [ADR-0002](0002-location-independent-of-storage.md) | Accepted | Field location is independent of storage |
-| [ADR-0003](0003-integrator-interprets-vector-field.md) | Accepted | Integrator as a higher-order interpretation |
-| [ADR-0004](0004-compatible-projection-complex.md) | Accepted | Compatible divergence, gradient, Poisson, and boundary system |
-| [ADR-0005](0005-dimensional-semantics-nondimensional-execution.md) | Accepted | SI semantic model with explicit nondimensional execution |
-| [ADR-0006](0006-restart-and-forcing-time-laws.md) | Accepted | Accepted-step restart and explicit forcing-time semantics |
-| [ADR-0007](0007-mesh-general-ownership-z-slab-first.md) | Accepted | Mesh-general ownership with a z-slab first interpreter |
+| [ADR-0001](0001-static-semantic-field-types.md) | Superseded | Static semantic field types with construction-time validation |
+| [ADR-0002](0002-location-independent-of-storage.md) | Superseded | Field location is independent of storage |
+| [ADR-0003](0003-integrator-interprets-vector-field.md) | Superseded | Integrator as a higher-order interpretation |
+| [ADR-0004](0004-compatible-projection-complex.md) | Superseded | Compatible divergence, gradient, Poisson, and boundary system |
+| [ADR-0005](0005-dimensional-semantics-nondimensional-execution.md) | Superseded | SI semantic model with explicit nondimensional execution |
+| [ADR-0006](0006-restart-and-forcing-time-laws.md) | Superseded | Accepted-step restart and explicit forcing-time semantics |
+| [ADR-0007](0007-mesh-general-ownership-z-slab-first.md) | Superseded | Mesh-general ownership with a z-slab first interpreter |
 | [ADR-0008](0008-jax-only-array-interpretations.md) | Superseded | JAX-only production and independent JAX reference interpretations |
-| [ADR-0009](0009-fixed-step-ab2-projection.md) | Accepted | Fixed-step AB2, Euler startup, one terminal projection, and persistent history |
-| [ADR-0010](0010-first-dry-flow-vector-field.md) | Accepted | Conservative dry-flow vector field with driving, wall stress, and static SGS |
-| [ADR-0011](0011-coriolis-geostrophic-tendency.md) | Accepted | Additive Coriolis--geostrophic forcing and explicit no-rotation identity |
-| [ADR-0012](0012-boussinesq-scalar-and-capping-inversion.md) | Accepted | Conserved potential-temperature perturbation, Boussinesq buoyancy, and explicit capping inversion |
-| [ADR-0013](0013-top-rayleigh-geostrophic-damping.md) | Accepted | Additive top Rayleigh relaxation toward geostrophic flow |
-| [ADR-0014](0014-lagrangian-scale-dependent-dynamic-closure.md) | Accepted | LASD accepted-step event, restart memory, scalar flux, and diagnostic variance |
+| [ADR-0009](0009-fixed-step-ab2-projection.md) | Superseded | Fixed-step AB2, Euler startup, one terminal projection, and persistent history |
+| [ADR-0010](0010-first-dry-flow-vector-field.md) | Superseded | Conservative dry-flow vector field with driving, wall stress, and static SGS |
+| [ADR-0011](0011-coriolis-geostrophic-tendency.md) | Superseded | Additive Coriolis--geostrophic forcing and explicit no-rotation identity |
+| [ADR-0012](0012-boussinesq-scalar-and-capping-inversion.md) | Superseded | Conserved potential-temperature perturbation, Boussinesq buoyancy, and explicit capping inversion |
+| [ADR-0013](0013-top-rayleigh-geostrophic-damping.md) | Superseded | Additive top Rayleigh relaxation toward geostrophic flow |
+| [ADR-0014](0014-lagrangian-scale-dependent-dynamic-closure.md) | Superseded | LASD accepted-step event, restart memory, scalar flux, and diagnostic variance |
 | [ADR-0015](0015-unified-zslab-interpreter.md) | Superseded | One z-slab production interpreter with single-shard local execution |
-| [ADR-0016](0016-unified-jax-solver.md) | Accepted | One JAX solver with size-one execution and private distribution lowering |
+| [ADR-0016](0016-unified-jax-solver.md) | Superseded | One JAX solver with size-one execution and private distribution lowering |
+| [ADR-0017](0017-direct-finite-volume-solver.md) | Accepted | Direct finite-volume solver with FFT, GMG, and optional AMG pressure backends |
 
 Decision records constrain future code but contain no implementation. A record
 is accepted only through an explicit design discussion.

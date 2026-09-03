@@ -23,13 +23,13 @@ def main() -> int:
         _models,
         load_workflow,
     )
-    from jaxwind.fv import (
+    from jaxwind import (
         build_gmg_solver,
         build_tendency,
         divergence,
         enforce_open_velocity,
     )
-    from jaxwind.fv.poisson import _apply_laplacian
+    from jaxwind.poisson import _apply_laplacian
 
     workflow = load_workflow(arguments.config)
     case = workflow.case.physical
@@ -71,7 +71,7 @@ def main() -> int:
     for name, settings in configurations:
         solve = jax.jit(build_gmg_solver(
             grid,
-            dtype=case.pressure.dtype,
+            dtype=case.dtype,
             periodic_x=False,
             **settings,
         ))

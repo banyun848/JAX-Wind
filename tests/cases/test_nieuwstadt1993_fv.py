@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from applications.abl.config import load_abl
+from applications.fv_abl.physical import load_abl
 from tools.run_fv_andren1994 import PROFILE_NAMES
 from tools.run_fv_nieuwstadt1993 import (
     DEFAULT_CONFIG,

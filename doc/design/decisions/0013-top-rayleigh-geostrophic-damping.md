@@ -1,6 +1,6 @@
 # ADR-0013: Additive top Rayleigh--geostrophic damping
 
-Status: Accepted
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

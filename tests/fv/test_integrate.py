@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     FREE_SLIP,
     Boundaries,
     FlowModel,
@@ -215,7 +215,7 @@ class FastRungeKuttaTest(unittest.TestCase):
 
     def counting_poisson(self, grid: UniformGrid):
         """A pressure solver that records how often it is invoked."""
-        from jaxwind.fv.poisson import PressurePoisson
+        from jaxwind.poisson import PressurePoisson
 
         base = build_pressure_poisson(grid, backend="fft")
         calls: list[int] = []

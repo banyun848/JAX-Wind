@@ -25,17 +25,14 @@ from .diagnostics import (
 
 
 def _physical_rotation(case) -> tuple[float, float, float, float]:
-    rotation = case.model.momentum.rotation
-    if not hasattr(rotation, "coriolis_parameter"):
+    vertical, horizontal = case.coriolis_s
+    if vertical == 0.0:
         return 0.0, 0.0, 0.0, 0.0
-    scales = case.mechanical_scales
     return (
-        scales.from_execution_inverse_time(rotation.coriolis_parameter),
-        scales.from_execution_inverse_time(
-            rotation.horizontal_coriolis_parameter
-        ),
-        scales.from_execution_velocity(rotation.geostrophic_x_velocity),
-        scales.from_execution_velocity(rotation.geostrophic_y_velocity),
+        vertical,
+        horizontal,
+        case.geostrophic_velocity_m_s[0] - case.advection_frame_velocity_m_s[0],
+        case.geostrophic_velocity_m_s[1] - case.advection_frame_velocity_m_s[1],
     )
 
 
@@ -45,16 +42,10 @@ def resolved(configured: FiniteVolumeCase) -> dict:
     case = configured.physical
     options = configured.options
     grid = case.physical_grid
-    scales = case.mechanical_scales
-    scalar_scales = case.scalar_scales
-    momentum = case.model.momentum
     vertical_f, horizontal_f, geostrophic_u, geostrophic_v = (
         _physical_rotation(case)
     )
-    pressure = momentum.pressure_gradient
-    surface = case.model.surface_transfer
-    if not hasattr(surface, "scalar_roughness_length"):
-        surface = None
+    surface = case.surface_scalar
     result = {
         "case": case.name,
         "citation": case.citation,
@@ -84,7 +75,7 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         ),
         "cfl_ceiling": options.cfl_ceiling,
         "steps": case.steps,
-        "dtype": case.pressure.dtype,
+        "dtype": case.dtype,
         "chunk_steps": options.chunk_steps,
         "spectrum_diagnostic": options.spectrum_diagnostic,
         "output_directory": str(options.output_directory),
@@ -92,9 +83,7 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         "gmg_presweeps": options.gmg_presweeps,
         "gmg_postsweeps": options.gmg_postsweeps,
         "gmg_anisotropy_aware": options.gmg_anisotropy_aware,
-        "roughness_length_m": scales.from_execution_length(
-            momentum.wall.roughness_length
-        ),
+        "roughness_length_m": case.roughness_length_m,
         "coriolis_vertical_s": vertical_f,
         "coriolis_horizontal_s": horizontal_f,
         "evolved_geostrophic_velocity_m_s": [
@@ -106,21 +95,12 @@ def resolved(configured: FiniteVolumeCase) -> dict:
             geostrophic_v + case.advection_frame_velocity_m_s[1],
         ],
         "velocity_offset_m_s": list(case.advection_frame_velocity_m_s),
-        "pressure_acceleration_m_s2": [
-            scales.from_execution_acceleration(pressure.x_acceleration),
-            scales.from_execution_acceleration(pressure.y_acceleration),
-        ],
-        "scalar_reference": scalar_scales.reference_value,
-        "scalar_surface_flux": scalar_scales.from_execution_flux(
-            case.model.scalar_boundary.lower_flux
-        ),
-        "buoyancy_acceleration_per_scalar": (
-            scalar_scales.from_execution_buoyancy_coefficient(
-                case.model.buoyancy.acceleration_per_temperature
-            )
-        ),
-        "sample_start_step": case.output.sample_start_step,
-        "sample_every_steps": case.output.sample_every_steps,
+        "pressure_acceleration_m_s2": list(case.pressure_acceleration_m_s2),
+        "scalar_reference": case.scalar_reference_value,
+        "scalar_surface_flux": case.scalar_surface_flux,
+        "buoyancy_acceleration_per_scalar": case.buoyancy_acceleration_per_scalar,
+        "sample_start_step": case.sample_start_step,
+        "sample_every_steps": case.sample_every_steps,
         "spectrum_heights_m": list(
             case.diagnostic_reference.spectrum_heights_m
         ),
@@ -129,19 +109,9 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         result.update(
             {
                 "momentum_roughness_m": result["roughness_length_m"],
-                "scalar_roughness_m": scales.from_execution_length(
-                    surface.scalar_roughness_length
-                ),
-                "surface_scalar_initial": (
-                    scalar_scales.from_execution_scalar(
-                        surface.surface_scalar_initial
-                    )
-                ),
-                "surface_scalar_rate_per_second": (
-                    surface.surface_scalar_rate
-                    * scalar_scales.magnitude
-                    / scales.time
-                ),
+                "scalar_roughness_m": surface.roughness_length_m,
+                "surface_scalar_initial": surface.initial_value,
+                "surface_scalar_rate_per_second": surface.rate_per_second,
             }
         )
     return result
@@ -226,9 +196,9 @@ def evaluate(
 
     import jax
 
-    jax.config.update("jax_enable_x64", case.pressure.dtype == "float64")
+    jax.config.update("jax_enable_x64", case.dtype == "float64")
     import jax.numpy as jnp
-    from jaxwind.fv import (
+    from jaxwind import (
         AnisotropicMinimumDissipation,
         CELL_AVERAGE,
         LOCAL,
@@ -274,7 +244,7 @@ def evaluate(
     poisson = build_pressure_poisson(
         grid,
         backend=options.pressure_backend,
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
         config=gmg_config,
     )
     velocity, _ = project(velocity, poisson, 1.0)
@@ -293,13 +263,11 @@ def evaluate(
         )
     pressure_force = configuration["pressure_acceleration_m_s2"]
     wall = None
-    coupled_surface = case.model.surface_transfer
-    if not hasattr(coupled_surface, "scalar_roughness_length"):
-        coupled_surface = None
+    coupled_surface = case.surface_scalar
     if coupled_surface is None:
         wall = MoninObukhovWall(
             configuration["roughness_length_m"],
-            von_karman=case.model.momentum.wall.von_karman,
+            von_karman=case.von_karman,
             sampling=CELL_AVERAGE,
             averaging=LOCAL,
         )
@@ -331,7 +299,7 @@ def evaluate(
             x_velocity_offset=offset_u,
             y_velocity_offset=offset_v,
             buoyancy_coefficient=coefficient,
-            von_karman=case.model.momentum.wall.von_karman,
+            von_karman=case.von_karman,
             positive_zeta_momentum_slope=(
                 coupled_surface.positive_zeta_momentum_slope
             ),
@@ -363,7 +331,7 @@ def evaluate(
         grid,
         velocity,
         scalar_field,
-        dtype=case.pressure.dtype,
+        dtype=case.dtype,
     )
 
     if surface is None:
@@ -484,8 +452,8 @@ def evaluate(
                 block,
                 steps_to_next_sample(
                     current,
-                    case.output.sample_start_step,
-                    case.output.sample_every_steps,
+                    case.sample_start_step,
+                    case.sample_every_steps,
                 ),
             )
             started = time.perf_counter()
@@ -543,9 +511,9 @@ def evaluate(
             writer.writerow(row)
             history_stream.flush()
             if (
-                completed >= case.output.sample_start_step
-                and (completed - case.output.sample_start_step)
-                % case.output.sample_every_steps
+                completed >= case.sample_start_step
+                and (completed - case.sample_start_step)
+                % case.sample_every_steps
                 == 0
             ):
                 _sample(
@@ -608,7 +576,7 @@ def evaluate(
             "discretization": "finite-volume",
             "pressure_backend": options.pressure_backend,
             "time_integration": options.time_integration.upper(),
-            "momentum_closure": options.momentum_closure.upper(),
+            "momentum_closure": "AMD",
             "scalar_closure": "AMD eddy diffusivity",
             "surface_exchange": (
                 "Monin-Obukhov Businger-Dyer"

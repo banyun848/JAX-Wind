@@ -8,14 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Protocol
 
-from .boussinesq import BoussinesqTendency
-
-
-@dataclass(frozen=True, slots=True)
-class NoActuatorDisk:
-    """Explicit absence of turbine forcing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +58,8 @@ class PureThrustActuatorDisk:
         prescribed = self.prescribed_inflow_velocity > 0.0
         if prescribed != (self.prescribed_thrust_coefficient > 0.0):
             raise ValueError(
-                "prescribed inflow velocity and thrust coefficient must both be positive or both zero"
+                "prescribed inflow velocity and thrust coefficient must both "
+                "be positive or both zero"
             )
         if min(
             self.normal_smoothing_width,
@@ -75,10 +69,6 @@ class PureThrustActuatorDisk:
         if self.hub_diameter < 0.0 or self.hub_diameter >= self.diameter:
             raise ValueError("hub diameter must lie in [0, rotor diameter)")
 
-
-@dataclass(frozen=True, slots=True)
-class NoActuatorLine:
-    """Explicit absence of rotating blade-element forcing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,10 +322,6 @@ class BladeElementActuatorDisk(BladeElementActuatorLine):
         )
 
 
-@dataclass(frozen=True, slots=True)
-class NoTurbineBody:
-    """Explicit absence of nacelle and tower drag."""
-
 
 @dataclass(frozen=True, slots=True)
 class NacelleTowerDrag:
@@ -371,270 +357,10 @@ class NacelleTowerDrag:
             raise ValueError("nacelle/tower drag coefficients must be nonnegative")
 
 
-@dataclass(frozen=True, slots=True)
-class NoFringe:
-    """Explicit absence of downstream fringe forcing."""
 
-
-@dataclass(frozen=True, slots=True)
-class ConcurrentPrecursorFringe:
-    """Relax the downstream fringe toward a concurrent precursor field."""
-
-    start_x: float
-    relaxation_time: float
-    rise_width: float | None = None
-    fall_width: float | None = None
-
-    def __post_init__(self) -> None:
-        if not math.isfinite(self.start_x) or self.start_x < 0.0:
-            raise ValueError("fringe start must be finite and nonnegative")
-        if not math.isfinite(self.relaxation_time) or self.relaxation_time <= 0.0:
-            raise ValueError("fringe relaxation time must be finite and positive")
-        widths = (self.rise_width, self.fall_width)
-        if (widths[0] is None) != (widths[1] is None):
-            raise ValueError("fringe rise and fall widths must be specified together")
-        if widths[0] is not None and (
-            not all(math.isfinite(value) for value in widths)
-            or min(widths) <= 0.0
-        ):
-            raise ValueError("fringe rise and fall widths must be finite and positive")
-
-    def resolved_widths(self, end_x: float) -> tuple[float, float]:
-        available = end_x - self.start_x
-        if not math.isfinite(end_x) or available <= 0.0:
-            raise ValueError("fringe start must lie before the periodic seam")
-        if self.rise_width is None:
-            return 0.5 * available, 0.5 * available
-        assert self.fall_width is not None
-        if self.rise_width + self.fall_width > available:
-            raise ValueError("fringe rise and fall widths exceed the fringe region")
-        return self.rise_width, self.fall_width
-
-
-@dataclass(frozen=True, slots=True)
-class WindTunnelModel:
-    """Independent turbine and fringe choices."""
-
-    actuator_disk: (
-        NoActuatorDisk | PureThrustActuatorDisk | BladeElementActuatorDisk
-    ) = NoActuatorDisk()
-    fringe: NoFringe | ConcurrentPrecursorFringe = NoFringe()
-    actuator_line: NoActuatorLine | BladeElementActuatorLine = (
-        NoActuatorLine()
-    )
-    turbine_body: NoTurbineBody | NacelleTowerDrag = NoTurbineBody()
-
-    def __post_init__(self) -> None:
-        if not isinstance(
-            self.actuator_disk,
-            (NoActuatorDisk, PureThrustActuatorDisk, BladeElementActuatorDisk),
-        ):
-            raise TypeError("unsupported actuator-disk choice")
-        if not isinstance(self.fringe, (NoFringe, ConcurrentPrecursorFringe)):
-            raise TypeError("unsupported wind-tunnel fringe choice")
-        if not isinstance(
-            self.actuator_line,
-            (
-                NoActuatorLine,
-                BladeElementActuatorLine,
-            ),
-        ):
-            raise TypeError("unsupported actuator-line choice")
-        if not isinstance(self.turbine_body, (NoTurbineBody, NacelleTowerDrag)):
-            raise TypeError("unsupported turbine-body choice")
-        if isinstance(
-            self.actuator_disk,
-            (PureThrustActuatorDisk, BladeElementActuatorDisk),
-        ) and isinstance(
-            self.actuator_line,
-            BladeElementActuatorLine,
-        ):
-            raise ValueError("actuator disk and actuator line are mutually exclusive")
-
-
-@dataclass(frozen=True, slots=True)
-class ConcurrentPrecursorEnvironment:
-    """Same-layout precursor velocity sampled at the main evaluation time."""
-
-    velocity: Any
-    closure: Any | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ConcurrentPrecursorLasdEventDiagnostic:
-    """LASD update plus confirmation that precursor memory was imposed."""
-
-    lasd: Any
-    closure_relaxed: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class ConcurrentPrecursorLasdAcceptedStepEvent:
-    """Relax main LASD memory at a synchronized accepted-step boundary."""
-
-    algebra: Any
-    model: Any
-    dt: float
-    fringe: ConcurrentPrecursorFringe
-
-    def __post_init__(self) -> None:
-        if not math.isfinite(self.dt) or self.dt <= 0.0:
-            raise ValueError("LASD event dt must be finite and positive")
-        if not isinstance(self.fringe, ConcurrentPrecursorFringe):
-            raise TypeError("concurrent LASD event requires a precursor fringe")
-
-    def __call__(self, fields: Any, clock: Any, environment: Any) -> tuple[Any, Any]:
-        if (
-            not isinstance(environment, ConcurrentPrecursorEnvironment)
-            or environment.closure is None
-        ):
-            raise TypeError(
-                "concurrent LASD event requires precursor closure memory"
-            )
-        relaxed = self.algebra.relax_lasd_closure(
-            fields,
-            environment.closure,
-            self.fringe,
-            self.dt,
-        )
-        prepared, diagnostic = self.algebra.prepare_lasd_closure(
-            relaxed,
-            self.model,
-            clock,
-            self.dt,
-        )
-        return prepared, ConcurrentPrecursorLasdEventDiagnostic(diagnostic)
-
-
-@dataclass(frozen=True, slots=True)
-class WindTunnelDiagnostic:
-    base: Any
-    actuator_disk_enabled: bool
-    concurrent_fringe_enabled: bool
-    actuator_line_enabled: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class WindTunnelVectorFieldResult:
-    tendency: Any
-    diagnostic: WindTunnelDiagnostic
-
-
-class WindTunnelAlgebra(Protocol):
-    def wind_tunnel_tendency(
-        self,
-        velocity: Any,
-        model: WindTunnelModel,
-        environment: Any,
-        evaluation_time: Any | None = None,
-    ) -> Any: ...
-
-    def combine_tendencies(self, tendencies: tuple[Any, ...]) -> Any: ...
-
-
-@dataclass(frozen=True, slots=True)
-class WindTunnelVectorField:
-    """Add wind-tunnel forcing to an arbitrary dry momentum vector field."""
-
-    algebra: WindTunnelAlgebra
-    base: Any
-    model: WindTunnelModel
-
-    def __call__(self, evaluation: Any) -> WindTunnelVectorFieldResult:
-        base = self.base(evaluation)
-        disk_enabled = isinstance(
-            self.model.actuator_disk,
-            (PureThrustActuatorDisk, BladeElementActuatorDisk),
-        )
-        line_enabled = isinstance(
-            self.model.actuator_line,
-            BladeElementActuatorLine,
-        )
-        fringe_enabled = isinstance(self.model.fringe, ConcurrentPrecursorFringe)
-        body_enabled = isinstance(self.model.turbine_body, NacelleTowerDrag)
-        if disk_enabled or line_enabled or body_enabled or fringe_enabled:
-            forcing = self.algebra.wind_tunnel_tendency(
-                evaluation.velocity,
-                self.model,
-                evaluation.environment,
-                evaluation.time,
-            )
-            tendency = self.algebra.combine_tendencies((base.tendency, forcing))
-        else:
-            tendency = base.tendency
-        return WindTunnelVectorFieldResult(
-            tendency,
-            WindTunnelDiagnostic(
-                base.diagnostic,
-                disk_enabled,
-                fringe_enabled,
-                line_enabled,
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class WindTunnelBoussinesqVectorField:
-    """Add wind-tunnel momentum forcing to a velocity--scalar vector field.
-
-    The scalar tendency and closure state remain owned by the wrapped
-    Boussinesq program.  Only its momentum tendency is augmented by the
-    actuator disk, actuator line, and/or concurrent-precursor fringe.
-    """
-
-    algebra: WindTunnelAlgebra
-    base: Any
-    model: WindTunnelModel
-
-    def _combine(
-        self,
-        evaluation: Any,
-        base: Any,
-    ) -> WindTunnelVectorFieldResult:
-        disk_enabled = isinstance(
-            self.model.actuator_disk,
-            (PureThrustActuatorDisk, BladeElementActuatorDisk),
-        )
-        line_enabled = isinstance(
-            self.model.actuator_line,
-            BladeElementActuatorLine,
-        )
-        fringe_enabled = isinstance(self.model.fringe, ConcurrentPrecursorFringe)
-        momentum = base.tendency.velocity
-        body_enabled = isinstance(self.model.turbine_body, NacelleTowerDrag)
-        if disk_enabled or line_enabled or body_enabled or fringe_enabled:
-            forcing = self.algebra.wind_tunnel_tendency(
-                evaluation.velocity.velocity,
-                self.model,
-                evaluation.environment,
-                getattr(evaluation, "time", None),
-            )
-            momentum = self.algebra.combine_tendencies((momentum, forcing))
-        return WindTunnelVectorFieldResult(
-            BoussinesqTendency(
-                momentum,
-                base.tendency.potential_temperature,
-            ),
-            WindTunnelDiagnostic(
-                base.diagnostic,
-                disk_enabled,
-                fringe_enabled,
-                line_enabled,
-            ),
-        )
-
-    def __call__(self, evaluation: Any) -> WindTunnelVectorFieldResult:
-        return self._combine(evaluation, self.base(evaluation))
-
-    def evaluate_prepared(
-        self,
-        evaluation: Any,
-        momentum_context: Any,
-    ) -> WindTunnelVectorFieldResult:
-        evaluate_prepared = getattr(self.base, "evaluate_prepared", None)
-        if evaluate_prepared is None:
-            raise TypeError("wind-tunnel base does not support prepared evaluation")
-        return self._combine(
-            evaluation,
-            evaluate_prepared(evaluation, momentum_context),
-        )
+__all__ = [
+    "BladeElementActuatorDisk",
+    "BladeElementActuatorLine",
+    "NacelleTowerDrag",
+    "PureThrustActuatorDisk",
+]

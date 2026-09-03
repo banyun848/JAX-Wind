@@ -1,20 +1,15 @@
-"""Actuator-disk, fringe, and actuator-line JAX kernels."""
+"""Blade-element actuator-disk, actuator-line, and body JAX kernels."""
 
 from __future__ import annotations
 
 import jax.numpy as jnp
 from jax import lax
 
-from jaxwind._jax.actuator_disk import (
-    filtered_disk_velocity_correction,
-    gaussian_convolved_annulus,
-)
 from jaxwind._jax.actuator_line import (
     actuator_line_deformed_kinematics,
     blade_element_kinematic_forces,
     gaussian_weights,
 )
-from jaxwind._jax.fringe import plateau_fringe_mask
 
 
 def _local_z_metrics(grid, dtype, local_nz, partition_index):
@@ -37,159 +32,6 @@ def _local_z_metrics(grid, dtype, local_nz, partition_index):
         local(upper_face_widths),
     )
 
-
-def build_wind_tunnel_kernel(*, grid, axis_name: str):
-    def wind_tunnel_local(
-        u,
-        v,
-        w_upper,
-        target_u,
-        target_v,
-        target_w_upper,
-        disk_enabled,
-        disk_x,
-        disk_y,
-        disk_z,
-        disk_diameter,
-        hub_diameter,
-        thrust_coefficient_prime,
-        normal_smoothing_width,
-        transverse_smoothing_width,
-        yaw_degrees,
-        filtered_velocity_correction_enabled,
-        prescribed_inflow_velocity,
-        prescribed_thrust_coefficient,
-        fringe_enabled,
-        fringe_start_x,
-        fringe_relaxation_time,
-        fringe_rise_width,
-        fringe_fall_width,
-    ):
-        dtype = u.dtype
-        local_nz = u.shape[0]
-        partition_index = lax.axis_index(axis_name)
-        x = jnp.asarray(grid.x_centers, dtype=dtype)
-        y = jnp.asarray(grid.y_centers, dtype=dtype)
-        z, _, z_widths, _ = _local_z_metrics(
-            grid, dtype, local_nz, partition_index
-        )
-        x_widths = jnp.asarray(grid.x_widths, dtype=dtype)
-        y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
-        cell_volumes = (
-            z_widths[:, None, None]
-            * y_widths[None, :, None]
-            * x_widths[None, None, :]
-        )
-
-        periodic_x = (
-            jnp.mod(x - jnp.asarray(disk_x, dtype) + 0.5 * grid.lx, grid.lx)
-            - 0.5 * grid.lx
-        )
-        periodic_y = (
-            jnp.mod(y - jnp.asarray(disk_y, dtype) + 0.5 * grid.ly, grid.ly)
-            - 0.5 * grid.ly
-        )
-        yaw = jnp.deg2rad(jnp.asarray(yaw_degrees, dtype))
-        normal_x = jnp.cos(yaw)
-        normal_y = jnp.sin(yaw)
-        normal_distance = (
-            periodic_x[None, None, :] * normal_x
-            + periodic_y[None, :, None] * normal_y
-        )
-        in_plane = (
-            -periodic_x[None, None, :] * normal_y
-            + periodic_y[None, :, None] * normal_x
-        )
-        radius = jnp.sqrt(
-            in_plane**2 + (z[:, None, None] - jnp.asarray(disk_z, dtype)) ** 2
-        )
-        streamwise = jnp.exp(
-            -(
-                normal_distance
-                / jnp.asarray(normal_smoothing_width, dtype)
-            )
-            ** 2
-        )
-        radial = gaussian_convolved_annulus(
-            radius,
-            outer_radius=0.5 * jnp.asarray(disk_diameter, dtype),
-            inner_radius=0.5 * jnp.asarray(hub_diameter, dtype),
-            smoothing_width=jnp.asarray(transverse_smoothing_width, dtype),
-        )
-        disk_kernel = radial * streamwise
-        disk_area = 0.25 * jnp.pi * (
-            jnp.asarray(disk_diameter, dtype) ** 2
-            - jnp.asarray(hub_diameter, dtype) ** 2
-        )
-        kernel_integral = lax.psum(
-            jnp.sum(disk_kernel * cell_volumes), axis_name
-        )
-        disk_kernel = disk_kernel * disk_area / jnp.maximum(
-            kernel_integral,
-            jnp.finfo(dtype).tiny,
-        )
-        normal_velocity = u * normal_x + v * normal_y
-        weighted_kernel = disk_kernel * cell_volumes
-        numerator = lax.psum(
-            jnp.sum(normal_velocity * weighted_kernel), axis_name
-        )
-        denominator = lax.psum(jnp.sum(weighted_kernel), axis_name)
-        disk_velocity = numerator / jnp.maximum(denominator, jnp.finfo(dtype).tiny)
-        velocity_correction = jnp.where(
-            jnp.asarray(filtered_velocity_correction_enabled),
-            filtered_disk_velocity_correction(
-                thrust_coefficient_prime,
-                outer_radius=0.5 * jnp.asarray(disk_diameter, dtype),
-                inner_radius=0.5 * jnp.asarray(hub_diameter, dtype),
-                smoothing_width=jnp.asarray(transverse_smoothing_width, dtype),
-                dtype=dtype,
-            ),
-            1.0,
-        )
-        disk_velocity = velocity_correction * disk_velocity
-        prescribed = jnp.asarray(prescribed_inflow_velocity, dtype) > 0.0
-        loading_velocity = jnp.where(
-            prescribed,
-            jnp.asarray(prescribed_inflow_velocity, dtype),
-            disk_velocity,
-        )
-        loading_coefficient = jnp.where(
-            prescribed,
-            jnp.asarray(prescribed_thrust_coefficient, dtype),
-            jnp.asarray(thrust_coefficient_prime, dtype),
-        )
-        disk_acceleration = (
-            -0.5
-            * loading_coefficient
-            * loading_velocity
-            * jnp.abs(loading_velocity)
-            * disk_kernel
-            * jnp.asarray(disk_enabled, dtype)
-        )
-
-        mask = plateau_fringe_mask(
-            x,
-            start_x=fringe_start_x,
-            end_x=grid.lx,
-            rise_width=fringe_rise_width,
-            fall_width=fringe_fall_width,
-        )
-        rate = (
-            mask
-            / jnp.asarray(fringe_relaxation_time, dtype)
-            * jnp.asarray(fringe_enabled, dtype)
-        )
-        source_u = disk_acceleration * normal_x + rate[None, None, :] * (
-            target_u - u
-        )
-        source_v = disk_acceleration * normal_y + rate[None, None, :] * (
-            target_v - v
-        )
-        source_w = rate[None, None, :] * (target_w_upper - w_upper)
-        return source_u, source_v, source_w
-
-
-    return wind_tunnel_local
 
 
 def build_blade_element_disk_kernel(

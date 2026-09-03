@@ -265,7 +265,7 @@ def test_clustered_hitsz_toml_reproduces_the_cell_average_wall_law() -> None:
 
     from applications.initial_conditions import load_initial_profile
     from jaxwind.domain import AnalyticalGrid
-    from jaxwind.fv import (
+    from jaxwind import (
         MoninObukhovWall,
         StaggeredVelocity,
         logarithmic_profile,
@@ -328,7 +328,7 @@ def test_fixed_warmup_blocks_anchor_float32_time_to_step_count() -> None:
 
     from applications.fv_abl.workflow import _run_periodic_blocks
     from jaxwind.domain import UniformGrid
-    from jaxwind.fv import StaggeredVelocity
+    from jaxwind import StaggeredVelocity
 
     class State(NamedTuple):
         velocity: StaggeredVelocity

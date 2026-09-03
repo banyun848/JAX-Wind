@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     CLASSICAL_AMG_PCG,
     StaggeredVelocity,
     build_pressure_poisson,

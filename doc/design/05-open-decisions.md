@@ -1,5 +1,7 @@
 # Open decisions
 
+Status: **Historical; superseded by [ADR-0017](decisions/0017-direct-finite-volume-solver.md).**
+
 These questions are intentionally unresolved. Choosing them in code before the
 corresponding design amendment is prohibited.
 

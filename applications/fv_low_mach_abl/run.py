@@ -13,10 +13,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib
+import tomllib
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +186,7 @@ def load_case(path: str | Path) -> ExtensionCase:
 
 
 def _add_velocity(left, right):
-    from jaxwind.fv import StaggeredVelocity
+    from jaxwind import StaggeredVelocity
 
     return StaggeredVelocity(
         left.x + right.x,
@@ -199,8 +196,8 @@ def _add_velocity(left, right):
 
 
 def _cell_vector_to_faces(x, y, z, grid):
-    from jaxwind.fv import StaggeredVelocity
-    from jaxwind.fv.operators import _cells_to_faces
+    from jaxwind import StaggeredVelocity
+    from jaxwind.discretization import _cells_to_faces
 
     return StaggeredVelocity(
         _cells_to_faces(x, grid, 2, periodic=True, boundary="copy"),
@@ -218,7 +215,7 @@ def build_simulation(case: ExtensionCase):
         _models,
         load_workflow,
     )
-    from jaxwind.fv import (
+    from jaxwind import (
         IdealGasMixture,
         StaggeredVelocity,
         build_pressure_poisson,
@@ -509,8 +506,8 @@ def _write_mean_profile(
 
     from applications.fv_abl.evaluate import resolved
     from applications.fv_abl.workflow import _models
-    from applications.pressure_driven_lasd.reporting import write_log_law_svg
-    from jaxwind.fv import logarithmic_profile
+    from applications.fv_abl.reporting import write_log_law_svg
+    from jaxwind import logarithmic_profile
 
     configuration = resolved(workflow.case)
     _boundaries, momentum, _scalar, _buoyancy, _surface = _models(
@@ -699,7 +696,7 @@ def run(case: ExtensionCase, *, steps: int | None = None) -> dict[str, object]:
         raise ValueError("run steps must be positive")
     case.output.mkdir(parents=True, exist_ok=True)
     from applications.fv_abl.workflow import _main_frame_steps, _models
-    from jaxwind.fv import friction_velocity
+    from jaxwind import friction_velocity
 
     frame_steps = _main_frame_steps(total_steps, min(case.frame_count, total_steps))
     frame_step_set = set(frame_steps)

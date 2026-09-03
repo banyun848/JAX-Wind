@@ -1,6 +1,6 @@
 # ADR-0007: Mesh-general ownership with a z-slab first interpreter
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

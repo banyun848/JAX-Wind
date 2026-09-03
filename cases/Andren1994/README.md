@@ -1,9 +1,8 @@
 # Andrén et al. (1994) neutral ABL case
 
 This data-only case is configured by the fixed-schema
-[`config.toml`](config.toml) and composed by the
-spectral [`abl`](../../applications/abl/config.py) and finite-volume
-[`fv_abl`](../../applications/fv_abl/config.py) applications. The TOML
+[`config.toml`](config.toml) and composed by the finite-volume
+[`fv_abl`](../../applications/fv_abl/config.py) application. The TOML
 contains canonical SI inputs: the grid, Coriolis and
 geostrophic values, wall roughness, passive-scalar flux, initial profile,
 physical times, and numerical controls. The composition owns SI-to-execution
@@ -13,43 +12,9 @@ There is no neutral/stable/convective selector. This case's scalar is
 explicitly passive, so it has no buoyancy feedback and the resolved stability
 is the neutral limit.
 
-The schema has no solver construction, registry key, or case-specific solver.
-The `[finite_volume]` table selects only generic FV numerical and diagnostic
-components; unknown tables and keys are rejected. Each core exposes its fully
-resolved composition through a dry run.
-
-Inspect the resolved declaration without importing JAX:
-
-```bash
-python -m applications.abl cases/Andren1994/config.toml --dry-run
-```
-
-An alternative file using the same fixed physical schema can be supplied as
-the positional configuration path:
-
-```bash
-python -m applications.abl /path/to/config.toml --dry-run
-```
-
-Run the canonical `40³`, `tf = 10` case, or a short integration:
-
-```bash
-python -m applications.abl cases/Andren1994/config.toml
-python -m applications.abl \
-  cases/Andren1994/config.toml --max-steps 10 --overwrite
-```
-
-Use a separate output directory for smoke runs:
-
-```bash
-python -m applications.abl cases/Andren1994/config.toml \
-  --max-steps 1 \
-  --output /tmp/andren1994-smoke \
-  --overwrite
-```
-
-Run the same configured physics through the staggered finite-volume path with
-AB2 and the FFT pressure solver:
+The schema has no solver registry or case-specific solver. The `[finite_volume]`
+table selects pressure, integration, closure, diagnostic, and output settings;
+unknown tables and keys are rejected. Run the configured case with:
 
 ```bash
 python -m applications.fv_abl cases/Andren1994/config.toml --dry-run
@@ -59,14 +24,11 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
 ```
 
 This FV realization uses AMD for momentum and its eddy viscosity for passive-
-scalar diffusion; `resolved_case.json` and `summary.json` preserve that
-distinction from the canonical LASD implementation. During the configured
+scalar diffusion. `resolved_case.json` and `summary.json` record that choice. During the configured
 statistics window it writes total momentum and scalar fluxes, signed AMD TKE
 transfer, momentum and scalar diffusivities, streamwise spectra, total resolved
 TKE history, and momentum-stationarity metrics. AMD has no prognostic SGS
-TKE, so
-the reported modeled SGS-TKE contribution is explicitly zero rather than an
-inferred LASD quantity.
+TKE, so the reported modeled SGS-TKE contribution is explicitly zero rather than an inferred prognostic quantity.
 
 ## FV warmup, precursor, and enforced-main workflow
 
@@ -109,8 +71,7 @@ For a short end-to-end smoke run, `--max-steps 2` caps every stage while
 retaining the same boundary and backend choices.
 
 The reference profile and published comparison envelope live under
-[`reference`](reference/). Earlier figure-extraction and detailed budget tools
-remain preserved in [`legacy/cases/Andren1994`](../../legacy/cases/Andren1994/).
+[`reference`](reference/).
 
 Clean crops of all 19 published figures live under
 [`reference/figure_panels`](reference/figure_panels/). Their source pages,
@@ -121,7 +82,7 @@ Overlay a completed active run on the directly comparable profile panels:
 
 ```bash
 python tools/overlay_andren1994.py \
-  outputs/andren1994_lasd_40x40x40
+  outputs/andren1994_fv_gmg_40x40x40
 ```
 
 This writes individual overlays for Figures 2 through 8, 11, 14, and 15, a

@@ -1,6 +1,6 @@
 # ADR-0010: First dry-flow vector field is a sum of four conservative terms
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

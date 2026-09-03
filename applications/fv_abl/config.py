@@ -7,13 +7,10 @@ import math
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
-    import tomli as tomllib
+import tomllib
 
-from applications.abl.config import load_abl
-from applications.boussinesq import BoussinesqCase
+from .case import BoussinesqCase
+from .physical import load_abl
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +19,6 @@ class FiniteVolumeOptions:
 
     pressure_backend: str
     time_integration: str
-    momentum_closure: str
     turbulent_prandtl: float
     chunk_steps: int
     spectrum_diagnostic: str
@@ -87,7 +83,6 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
     expected = {
         "pressure_backend",
         "time_integration",
-        "momentum_closure",
         "turbulent_prandtl",
         "chunk_steps",
         "spectrum_diagnostic",
@@ -126,11 +121,6 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
             {"ab2", "fast-rk3", "rk3"},
             "time_integration",
         ),
-        momentum_closure=_choice(
-            _string(table, "momentum_closure"),
-            {"amd"},
-            "momentum_closure",
-        ),
         turbulent_prandtl=_positive_number(table, "turbulent_prandtl"),
         chunk_steps=_positive_integer(table, "chunk_steps"),
         spectrum_diagnostic=_choice(
@@ -164,14 +154,10 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
             if "gmg_postsweeps" in table
             else 2
         ),
-        gmg_anisotropy_aware=table.get(
-            "gmg_anisotropy_aware", True
-        ),
+        gmg_anisotropy_aware=table.get("gmg_anisotropy_aware", True),
     )
     if not isinstance(options.gmg_anisotropy_aware, bool):
-        raise ValueError(
-            "finite_volume.gmg_anisotropy_aware must be boolean"
-        )
+        raise ValueError("finite_volume.gmg_anisotropy_aware must be boolean")
     return FiniteVolumeCase(load_abl(source), options, source)
 
 

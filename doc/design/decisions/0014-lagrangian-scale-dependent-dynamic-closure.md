@@ -1,6 +1,6 @@
 # ADR-0014: LASD is an accepted-step closure event with complete restart memory
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

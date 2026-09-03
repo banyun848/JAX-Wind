@@ -12,7 +12,7 @@ from jaxwind.domain import (
     TanhMapping,
     UniformGrid,
 )
-from jaxwind.fv import (
+from jaxwind import (
     StaggeredVelocity,
     build_adbem_forcing,
     build_actuator_line_forcing,

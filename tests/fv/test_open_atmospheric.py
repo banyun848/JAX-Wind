@@ -7,7 +7,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     FREE_SLIP,
     OPEN,
     Boundaries,

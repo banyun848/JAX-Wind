@@ -1,5 +1,7 @@
 # Effects and distribution
 
+Status: **Historical; superseded by [ADR-0017](decisions/0017-direct-finite-volume-solver.md).**
+
 ## 1. Effect boundary
 
 The following operations are effects and MUST remain outside the pure numerical

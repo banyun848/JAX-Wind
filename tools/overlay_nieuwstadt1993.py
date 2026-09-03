@@ -16,7 +16,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RESULTS = ROOT / "outputs" / "nieuwstadt1993_lasd_40x40x48"
+DEFAULT_RESULTS = ROOT / "outputs" / "nieuwstadt1993_fv_gmg_40x40x48"
 DEFAULT_REFERENCE = (
     ROOT / "cases" / "Nieuwstadt1993" / "reference" / "figures"
 )
@@ -349,7 +349,7 @@ def overlay_results(
     reference: Path,
     output: Path,
     *,
-    legend_label: str = "JAX-Wind uniform LASD 40×40×48 GPU",
+    legend_label: str = "JAX-Wind FV AMD GMG 40×40×48 GPU",
 ) -> list[Path]:
     profiles = _csv(results / "profiles.csv")
     radial = _csv(results / "radial_spectra.csv")
@@ -398,7 +398,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--legend-label",
-        default="JAX-Wind uniform LASD 40×40×48 GPU",
+        default="JAX-Wind FV AMD GMG 40×40×48 GPU",
     )
     return parser
 

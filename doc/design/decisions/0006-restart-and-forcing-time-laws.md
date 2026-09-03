@@ -1,6 +1,6 @@
 # ADR-0006: Restart and forcing-time laws
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

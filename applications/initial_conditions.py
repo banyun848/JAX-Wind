@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .boussinesq import BoussinesqCase
+from .fv_abl.case import BoussinesqCase, TabulatedBoussinesqState
 
 
 REQUIRED_COLUMNS = (
@@ -53,74 +53,4 @@ def load_initial_profile(case: BoussinesqCase) -> np.ndarray:
     return table
 
 
-def _unit_plane_noise(jax, jnp, key, shape, dtype):
-    noise = jax.random.uniform(key, shape, dtype, minval=-0.5, maxval=0.5)
-    noise -= jnp.mean(noise, axis=(-2, -1), keepdims=True)
-    rms = jnp.sqrt(jnp.mean(noise * noise, axis=(-2, -1), keepdims=True))
-    return noise / jnp.maximum(rms, jnp.finfo(dtype).tiny)
-
-
-def build_initial_fields(
-    case: BoussinesqCase,
-    *,
-    jax,
-    jnp,
-    solver,
-):
-    """Materialize and project the configured mean-plus-RMS initial state."""
-
-    from jaxwind.domain import Accepted
-    from jaxwind.physics import BoussinesqFields
-
-    table = load_initial_profile(case)
-    grid = case.physical_grid
-    dtype = getattr(jnp, case.pressure.dtype)
-    z = jnp.asarray(grid.z_centers, dtype=dtype)
-    table_z = jnp.asarray(table["z_m"], dtype=dtype)
-
-    def cell_profile(name: str):
-        return jnp.interp(z, table_z, jnp.asarray(table[name], dtype=dtype))
-
-    shape = (grid.nz, grid.ny, grid.nx)
-    keys = jax.random.split(jax.random.PRNGKey(case.initial_condition.seed), 3)
-    u_noise = _unit_plane_noise(jax, jnp, keys[0], shape, dtype)
-    v_noise = _unit_plane_noise(jax, jnp, keys[1], shape, dtype)
-    coupled_noise = _unit_plane_noise(jax, jnp, keys[2], shape, dtype)
-    frame_u, frame_v = case.advection_frame_velocity_m_s
-    u = cell_profile("u_m_s")[:, None, None] - frame_u + (
-        cell_profile("u_rms_m_s")[:, None, None] * u_noise
-    )
-    v = cell_profile("v_m_s")[:, None, None] - frame_v + (
-        cell_profile("v_rms_m_s")[:, None, None] * v_noise
-    )
-    w = jnp.asarray(table["w_upper_m_s"], dtype=dtype)[:, None, None] + (
-        jnp.asarray(table["w_upper_rms_m_s"], dtype=dtype)[:, None, None]
-        * coupled_noise
-    )
-    w = w.at[-1].set(0.0)
-    scalar_physical = cell_profile("scalar")[:, None, None] + (
-        cell_profile("scalar_rms")[:, None, None] * coupled_noise
-    )
-
-    lower = jnp.zeros((grid.ny, grid.nx), dtype=dtype)
-    velocity = solver.candidate_velocity(
-        case.mechanical_scales.to_execution_velocity(u).astype(dtype),
-        case.mechanical_scales.to_execution_velocity(v).astype(dtype),
-        case.mechanical_scales.to_execution_velocity(w).astype(dtype),
-        lower_boundary=lower,
-    )
-    projected = solver.project_initial_velocity(velocity)
-    scalar = solver.cell_field(
-        case.scalar_scales.field_quantity,
-        Accepted,
-        case.scalar_scales.to_execution_scalar(scalar_physical).astype(dtype),
-    )
-    fields = BoussinesqFields(projected, scalar)
-    return solver.initialize_fields(fields)
-
-
-__all__ = [
-    "TabulatedBoussinesqState",
-    "build_initial_fields",
-    "load_initial_profile",
-]
+__all__ = ["TabulatedBoussinesqState", "load_initial_profile"]

@@ -9,7 +9,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     FREE_SLIP,
     Boundaries,
     StaggeredVelocity,
@@ -22,7 +22,7 @@ from jaxwind.fv import (
     project,
     stable_timestep,
 )
-from jaxwind.fv.metrics import shaped_center_distances, shaped_widths
+from jaxwind.metrics import shaped_center_distances, shaped_widths
 
 
 class AdvectionTest(unittest.TestCase):

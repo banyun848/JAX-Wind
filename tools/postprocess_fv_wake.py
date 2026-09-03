@@ -110,7 +110,7 @@ def realized_thrust_coefficient(workflow, disk, velocity, reference_velocity: fl
     import jax.numpy as jnp
 
     from jaxwind._jax.wind import build_blade_element_disk_kernel
-    from jaxwind.fv import StaggeredVelocity, cell_velocity
+    from jaxwind import StaggeredVelocity, cell_velocity
 
     grid = workflow.case.physical.physical_grid
     staggered = StaggeredVelocity(

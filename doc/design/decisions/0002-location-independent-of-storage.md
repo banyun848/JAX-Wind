@@ -1,6 +1,6 @@
 # ADR-0002: Field location is independent of storage
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

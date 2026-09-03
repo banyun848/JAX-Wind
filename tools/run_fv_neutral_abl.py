@@ -33,7 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     CELL_AVERAGE,
     CELL_CENTRE,
     LOCAL,

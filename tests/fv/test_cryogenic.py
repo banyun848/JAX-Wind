@@ -11,7 +11,7 @@ from jaxwind.physics.cryogenic import (
     CryogenicMicrophysicsConfig,
     advance_nitrogen_droplet,
 )
-from jaxwind.fv.cryogenic import (
+from jaxwind.cryogenic import (
     LN2InletControl,
     LN2Jet,
     initial_ln2_parcels,

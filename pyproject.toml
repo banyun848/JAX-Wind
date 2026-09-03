@@ -7,10 +7,10 @@ name = "jaxwind"
 version = "0.0.0"
 description = "Functional JAX large-eddy simulation solver"
 requires-python = ">=3.11"
-dependencies = ["h5py>=3.10", "jax>=0.4.30"]
+dependencies = ["jax>=0.4.30"]
 
 [project.optional-dependencies]
-pressure = ["spectral-fd>=0.2.0"]
+tools = ["h5py>=3.10"]
 # The finite-volume solver's GPU pressure solve. The package lives in the
 # external/jax-amg submodule; install it with 'pip install -e external/jax-amg'
 # for a checkout, and note that it needs AmgX and a CUDA-enabled jaxlib.
@@ -24,7 +24,7 @@ exclude = ["jaxwind.windfarm.reference*"]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 # Keep the default suite deliberately small and architectural. Detailed
-# backend/oracle, scaling, visualization, and publication-reproduction tests
+# backend, scaling, visualization, and publication-reproduction tests
 # remain available with: pytest -o 'python_files=test_*.py'
 python_files = [
     "test_poisson.py",
@@ -33,8 +33,6 @@ python_files = [
     "test_cryogenic.py",
     "test_surface.py",
     "test_turbine.py",
-    "test_ln2_nozzle.py",
-    "test_ln2_benchmarks.py",
     "test_hitsz.py",
 ]
 

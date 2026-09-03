@@ -1,6 +1,6 @@
 # ADR-0005: Dimensional semantics, nondimensional execution
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0009: First integrator is fixed-step AB2 with one terminal projection
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

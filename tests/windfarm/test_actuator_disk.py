@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jaxwind.domain import ScaleSystem
-from jaxwind.physics import PureThrustActuatorDisk, WindTunnelModel
+from jaxwind.physics import PureThrustActuatorDisk
 from jaxwind.windfarm import (
     DTU_10MW_HUB_HEIGHT_M,
     DTU_10MW_ROTOR_DIAMETER_M,
@@ -40,7 +40,6 @@ def test_lowers_si_geometry_to_existing_force_conserving_disk() -> None:
     assert disk.hub_diameter == 0.0
     assert disk.yaw_degrees == 0.0
     assert disk.filtered_velocity_correction
-    assert WindTunnelModel(actuator_disk=disk).actuator_disk is disk
 
 
 @pytest.mark.parametrize(

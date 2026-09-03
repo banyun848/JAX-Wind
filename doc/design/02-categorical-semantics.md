@@ -1,5 +1,7 @@
 # Categorical semantics
 
+Status: **Historical; superseded by [ADR-0017](decisions/0017-direct-finite-volume-solver.md).**
+
 This document uses a deliberately small part of category theory. Its purpose
 is to constrain composition and interpretation, not to build an abstract DSL.
 

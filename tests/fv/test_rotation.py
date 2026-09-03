@@ -9,7 +9,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import CoriolisGeostrophic, StaggeredVelocity, coriolis_tendency
+from jaxwind import CoriolisGeostrophic, StaggeredVelocity, coriolis_tendency
 
 
 class CoriolisTendencyTest(unittest.TestCase):

@@ -1,6 +1,6 @@
 # ADR-0012: One conserved potential-temperature perturbation supplies Boussinesq buoyancy
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0017](0017-direct-finite-volume-solver.md)**
 
 ## Context
 

@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RESULTS = ROOT / "outputs" / "gabls1_lasd_32x32x32"
+DEFAULT_RESULTS = ROOT / "outputs" / "gabls1_fv_gmg_32x32x32"
 REFERENCE_ROOT = ROOT / "cases" / "GABLS1" / "reference"
 REFERENCE_DIRECTORIES = {
     6.25: REFERENCE_ROOT / "official_6p25m",

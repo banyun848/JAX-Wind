@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     FREE_SLIP,
     AnisotropicMinimumDissipation,
     StaticSmagorinsky,
@@ -168,7 +168,7 @@ class SubfilterStressTest(unittest.TestCase):
 
     def test_a_uniform_eddy_viscosity_reduces_to_the_laplacian(self) -> None:
         """With constant nu the stress divergence is the viscous term."""
-        from jaxwind.fv import diffusion
+        from jaxwind import diffusion
 
         velocity = turbulent_velocity(self.grid, 6)
         constant = jnp.full((self.grid.nz, self.grid.ny, self.grid.nx), 0.3)

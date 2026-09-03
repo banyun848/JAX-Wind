@@ -1,5 +1,7 @@
 # First implementation plan
 
+Status: **Historical; superseded by [ADR-0017](decisions/0017-direct-finite-volume-solver.md).**
+
 Status: **approved for implementation**.
 
 This plan turns ADR-0007 into the first non-placeholder vertical slice. It does

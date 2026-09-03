@@ -29,7 +29,7 @@ import jax
 import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
-from jaxwind.fv import (
+from jaxwind import (
     AnisotropicMinimumDissipation,
     Boundaries,
     FlowModel,

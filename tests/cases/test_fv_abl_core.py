@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from applications.abl.config import load_abl
+from applications.fv_abl.physical import load_abl
 from applications.fv_abl.config import load_fv_abl
 from applications.fv_abl.evaluate import resolved
 
@@ -18,15 +18,14 @@ CONFIGS = (
 
 
 @pytest.mark.parametrize("path", CONFIGS)
-def test_one_toml_feeds_both_solver_cores(path: Path) -> None:
-    spectral = load_abl(path)
+def test_fv_case_wraps_physical_configuration(path: Path) -> None:
+    physical = load_abl(path)
     finite_volume = load_fv_abl(path)
 
-    assert finite_volume.physical == spectral
+    assert finite_volume.physical == physical
     assert finite_volume.options.pressure_backend == "gmg"
     assert finite_volume.options.time_integration == "ab2"
-    assert finite_volume.options.momentum_closure == "amd"
-    assert resolved(finite_volume)["case"] == spectral.name
+    assert resolved(finite_volume)["case"] == physical.name
 
 
 def test_fv_options_are_strict_configuration(tmp_path: Path) -> None:
@@ -35,7 +34,7 @@ def test_fv_options_are_strict_configuration(tmp_path: Path) -> None:
     invalid.write_text(
         text.replace(
             'pressure_backend = "gmg"',
-            'pressure_backend = "spectral"',
+            'pressure_backend = "invalid"',
         ),
         encoding="utf-8",
     )
