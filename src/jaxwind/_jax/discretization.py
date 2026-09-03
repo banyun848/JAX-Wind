@@ -242,7 +242,7 @@ class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
             line.hub_radius,
             line.tip_radius,
             line.angular_velocity,
-            line.smoothing_width,
+            jnp.asarray(line.point_smoothing_widths, dtype=dtype),
             jnp.asarray(line.element_radii, dtype=dtype),
             jnp.asarray(line.element_widths, dtype=dtype),
             jnp.asarray(line.element_chords, dtype=dtype),

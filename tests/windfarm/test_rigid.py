@@ -203,6 +203,15 @@ def test_lowers_openfast_si_data_to_execution_units(tmp_path: Path) -> None:
         smoothing_width_m=4.0,
         hub_height_m=turbine.hub_height_m,
     )
+    configured_line = configured.to_actuator_line(
+        scales=scales,
+        initial_azimuth_degrees=23.0,
+    )
+    assert configured_line.x == 4.0
+    assert configured_line.y == 1.0
+    assert configured_line.initial_azimuth_degrees == 23.0
+    assert configured_line.element_chords == line.element_chords
+
     assert configured.element_smoothing_widths_m == pytest.approx(
         tuple(value * 100.0 for value in expected_widths)
     )

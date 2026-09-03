@@ -8,7 +8,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 from .buoyancy import LinearBoussinesqBuoyancy, boussinesq_tendency
 from .integrate import FlowModel, build_adaptive_run, build_tendency
@@ -37,7 +37,7 @@ class AtmosphericSolution(NamedTuple):
 
 
 def initial_atmospheric_solution(
-    grid: UniformGrid,
+    grid: Grid,
     velocity: StaggeredVelocity | None = None,
     scalar: jnp.ndarray | None = None,
     *,
@@ -71,7 +71,7 @@ def initial_atmospheric_solution(
 
 
 def build_atmospheric_step(
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries,
     poisson: PressurePoisson,
     momentum: FlowModel,
@@ -348,7 +348,7 @@ def build_atmospheric_run(
 
 def build_adaptive_atmospheric_run(
     step: Callable[[AtmosphericSolution, float], AtmosphericSolution],
-    grid: UniformGrid,
+    grid: Grid,
     *,
     cfl_ceiling: float,
     maximum_dt: float,

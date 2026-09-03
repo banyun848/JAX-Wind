@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import math
 
 from jaxwind.domain import ScaleSystem
-from jaxwind.physics import BladeElementActuatorDisk, NacelleTowerDrag
+from jaxwind.physics import (
+    BladeElementActuatorDisk,
+    BladeElementActuatorLine,
+    NacelleTowerDrag,
+)
 
 
 HITSZ_ROTOR_DIAMETER_M = 1.26
@@ -185,6 +189,21 @@ class HITSZR9BladeElementDisk:
             root_loss=True,
             smearing_azimuthal_elements=self.smearing_azimuthal_elements,
         )
+
+    def to_actuator_line(
+        self,
+        *,
+        scales: ScaleSystem,
+        initial_azimuth_degrees: float = 0.0,
+    ) -> BladeElementActuatorLine:
+        """Lower the R9 blade geometry to three instantaneous rotating lines."""
+        disk = self.to_actuator_disk(scales=scales)
+        values = {
+            field.name: getattr(disk, field.name)
+            for field in fields(BladeElementActuatorLine)
+        }
+        values["initial_azimuth_degrees"] = initial_azimuth_degrees
+        return BladeElementActuatorLine(**values)
 
     def to_nacelle_tower(self, *, scales: ScaleSystem) -> NacelleTowerDrag:
         width = (

@@ -43,6 +43,15 @@ def test_hitsz_r9_lowers_digitized_geometry_and_polar() -> None:
         0.06564288451029125
     )
 
+    line = turbine.to_actuator_line(
+        scales=ScaleSystem(length=1.0, velocity=1.0),
+        initial_azimuth_degrees=17.0,
+    )
+    assert line.blade_count == disk.blade_count
+    assert line.element_radii == disk.element_radii
+    assert line.polar_lift_coefficients == disk.polar_lift_coefficients
+    assert line.initial_azimuth_degrees == 17.0
+
     body = turbine.to_nacelle_tower(
         scales=ScaleSystem(length=1.0, velocity=1.0)
     )

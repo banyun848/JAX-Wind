@@ -1,0 +1,63 @@
+[case]
+name = "HITSZ inlet-boundary flashing LN2 jet, incompressible FV 256^3"
+
+[domain]
+cells = [256, 256, 256]
+lengths_m = [3.0, 3.0, 1.8]
+# x: prescribed LN2 jet/zero ambient inflow at 0 m and open outflow at 3 m.
+# y: impermeable wall-modelled side walls at 0 and 3 m.
+# z: impermeable floor and ceiling; floor and y walls use prescribed stress.
+
+[time]
+dt_seconds = 0.0005
+steps = 2000
+chunk_steps = 20
+checkpoint_every_steps = 2000
+
+[ambient]
+temperature_k = 300.0
+relative_humidity = 0.80
+# Murphy--Koop qsat(300 K, 101325 Pa) times 0.80.
+water_vapor_mixing_ratio = 0.017996758222579956
+pressure_pa = 101325.0
+
+[walls]
+# HITSZ smooth-wall value used by the wind-tunnel benchmark.
+roughness_length_m = 1.6100320416141182e-5
+
+[source]
+mode = "inflow"
+gas_inlet_radius_m = 0.005
+gas_inlet_temperature_k = 77.34
+# The physical 5 mm nozzle is unresolved. This sharp discrete support is
+# selected so sum(rho_N2 * u * dA) = mdot_v and sum(rho * u^2 * dA) = mdot_v U
+# on the anisotropic 256^3 inlet plane.
+subgrid_jet_enabled = true
+subgrid_support_radius_cells = 0.7575
+subgrid_transition_width_cells = 0.02
+subgrid_momentum_length_cells = 4.0
+subgrid_turbulence_intensity = 0.0
+subgrid_integral_scale_cells = 4.0
+subgrid_correlation_time_seconds = 3.0e-4
+subgrid_transverse_ratio = 1.0
+
+[jet]
+position_m = [0.0, 1.5, 0.876]
+radius_m = 0.005
+speed_m_s = 8.0
+mass_flow_rate_kg_s = 0.0125
+# Homogeneous-equilibrium quality implied by mdot/(A U) at 101325 Pa, 77.34 K.
+vapor_quality = 0.217596
+
+[numerics]
+flow_formulation = "incompressible"
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 2
+gmg_postsweeps = 2
+momentum_closure = "amd"
+time_integration = "rk3"
+dtype = "float32"
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_256_3x3x1p8_inlet_incompressible_rk3_dt5e4"

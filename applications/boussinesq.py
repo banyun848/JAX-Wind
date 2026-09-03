@@ -6,7 +6,8 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 
-from jaxwind.domain import ScaleSystem, UniformGrid
+from jaxwind.domain import ScaleSystem
+from jaxwind.domain.grid import Grid
 from jaxwind.integrators import AB2Config
 from jaxwind.physics import BoussinesqModel
 
@@ -171,7 +172,7 @@ class BoussinesqCase:
 
     name: str
     citation: str
-    physical_grid: UniformGrid
+    physical_grid: Grid
     mechanical_scales: ScaleSystem
     scalar_scales: ScalarScaleSystem
     model: BoussinesqModel

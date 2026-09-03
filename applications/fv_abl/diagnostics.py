@@ -172,7 +172,7 @@ class RadialAccumulator:
             name: np.zeros(grid.nz, dtype=np.float64)
             for name in PROFILE_NAMES
         }
-        z = (np.arange(grid.nz, dtype=np.float64) + 0.5) * grid.dz
+        z = np.asarray(grid.z_centers, dtype=np.float64)
         self.levels = np.asarray(
             [
                 int(np.argmin(np.abs(z - height)))
@@ -237,7 +237,7 @@ ConvectiveAccumulator = RadialAccumulator
 def profile_columns(case, accumulator) -> dict[str, np.ndarray]:
     fields = accumulator.profiles()
     grid = case.physical_grid
-    z = (np.arange(grid.nz, dtype=np.float64) + 0.5) * grid.dz
+    z = np.asarray(grid.z_centers, dtype=np.float64)
     resolved_tke = 0.5 * (
         fields["u_variance"] + fields["v_variance"] + fields["w_variance"]
     )
@@ -380,7 +380,7 @@ def write_radial_spectra(path: Path, case, accumulator) -> None:
 def bulk_metrics(case, accumulator) -> dict[str, float]:
     profiles = accumulator.profiles()
     grid = case.physical_grid
-    z = (np.arange(grid.nz, dtype=np.float64) + 0.5) * grid.dz
+    z = np.asarray(grid.z_centers, dtype=np.float64)
     search = z <= case.diagnostic_reference.inversion_search_max_height_m
     total_flux = profiles["resolved_wc"] + profiles["sgs_wc"]
     candidates = np.flatnonzero(search)

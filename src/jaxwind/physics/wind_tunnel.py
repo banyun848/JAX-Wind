@@ -95,6 +95,8 @@ class BladeElementActuatorLine:
     Positive angular velocity advances it toward the rotor-plane horizontal
     basis.  Gaussian interpolation and projection use
     ``exp(-(distance / smoothing_width)**2)`` and are discretely normalized.
+    ``element_gaussian_widths`` optionally overrides the scalar width with one
+    physical Gaussian width per radial element; it is repeated for each blade.
     """
 
     x: float
@@ -120,6 +122,7 @@ class BladeElementActuatorLine:
     initial_azimuth_degrees: float = 0.0
     tip_loss: bool = True
     root_loss: bool = True
+    element_gaussian_widths: tuple[float, ...] = ()
     element_flap_displacements: tuple[float, ...] = ()
     element_edge_displacements: tuple[float, ...] = ()
     element_flap_slopes: tuple[float, ...] = ()
@@ -185,6 +188,17 @@ class BladeElementActuatorLine:
             raise ValueError("actuator-line elements must lie between hub and tip")
         if min(self.element_widths) <= 0.0 or min(self.element_chords) <= 0.0:
             raise ValueError("actuator-line widths and chords must be positive")
+        if self.element_gaussian_widths and (
+            len(self.element_gaussian_widths) != element_count
+            or not all(
+                math.isfinite(value) and value > 0.0
+                for value in self.element_gaussian_widths
+            )
+        ):
+            raise ValueError(
+                "actuator-line Gaussian widths must be positive and contain "
+                "one value per radial element"
+            )
         point_count = self.blade_count * element_count
         deformation_arrays = (
             self.element_flap_displacements,
@@ -255,6 +269,17 @@ class BladeElementActuatorLine:
             for index in self.element_airfoil_ids
         ):
             raise ValueError("actuator-line airfoil index is outside the polar table")
+
+
+    @property
+    def point_smoothing_widths(self) -> tuple[float, ...]:
+        """Return Gaussian widths in flattened blade-major point order."""
+        radial = (
+            self.element_gaussian_widths
+            if self.element_gaussian_widths
+            else (self.smoothing_width,) * len(self.element_radii)
+        )
+        return radial * self.blade_count
 
 
 @dataclass(frozen=True, slots=True)

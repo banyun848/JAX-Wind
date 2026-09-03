@@ -1,0 +1,47 @@
+[case]
+name = "HITSZ hub-height flashing LN2 jet, variable-density low-Mach FV 256^3"
+
+[domain]
+cells = [256, 256, 256]
+lengths_m = [3.0, 3.0, 1.8]
+# x: zero ambient inlet at 0 m, pressure/zero-gradient outlet at 3 m.
+# y: impermeable wall-modelled side walls at 0 and 3 m.
+# z: impermeable floor and ceiling; floor and y walls use prescribed stress.
+
+[time]
+dt_seconds = 0.0005
+steps = 2000
+chunk_steps = 20
+checkpoint_every_steps = 2000
+
+[ambient]
+temperature_k = 300.0
+relative_humidity = 0.80
+# Murphy--Koop qsat(300 K, 101325 Pa) times 0.80.
+water_vapor_mixing_ratio = 0.017996758222579956
+pressure_pa = 101325.0
+
+[walls]
+# HITSZ smooth-wall value used by the wind-tunnel benchmark.
+roughness_length_m = 1.6100320416141182e-5
+
+[jet]
+position_m = [0.75, 1.5, 0.876]
+radius_m = 0.005
+speed_m_s = 8.0
+mass_flow_rate_kg_s = 0.0125
+# Homogeneous-equilibrium quality implied by mdot/(A U) at 101325 Pa, 77.34 K.
+vapor_quality = 0.217596
+
+[numerics]
+flow_formulation = "low-mach"
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 2
+gmg_postsweeps = 2
+momentum_closure = "amd"
+time_integration = "rk3"
+dtype = "float32"
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_256_3x3x1p8_xquarter_low_mach_rk3_dt5e4"

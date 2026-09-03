@@ -9,7 +9,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from jaxwind.domain import UniformGrid
+from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
 from jaxwind.fv import (
     StaggeredVelocity,
     build_pressure_poisson,
@@ -79,13 +79,102 @@ class GmgHierarchyTest(unittest.TestCase):
         self.assertTrue(bool(jnp.all(_prolong(coarse, factors) == 1.0)))
         self.assertTrue(bool(jnp.all(_restrict(fine, factors) == 1.0)))
 
+        fine_grid = AnalyticalGrid(
+            2,
+            2,
+            8,
+            1.0,
+            1.0,
+            1.0,
+            TanhMapping(0.0),
+            TanhMapping(0.0),
+            TanhMapping(1.2, focus=0.0),
+        )
+        factors = (1, 1, 2)
+        coarse_grid = fine_grid.coarsen(factors)
+        coarse_z = jnp.broadcast_to(
+            jnp.asarray(coarse_grid.z_centers)[:, None, None],
+            (coarse_grid.nz, coarse_grid.ny, coarse_grid.nx),
+        )
+        prolonged = _prolong(
+            coarse_z,
+            factors,
+            fine_grid=fine_grid,
+            coarse_grid=coarse_grid,
+        )
+        expected = np.broadcast_to(
+            fine_grid.z_centers[:, None, None], prolonged.shape
+        )
+        np.testing.assert_allclose(
+            np.asarray(prolonged)[1:-1],
+            expected[1:-1],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
     def test_restriction_is_the_scaled_adjoint_of_prolongation(self) -> None:
         factors = (2, 2, 2)
         coarse = jax.random.normal(jax.random.PRNGKey(31), (3, 4, 5))
         fine = jax.random.normal(jax.random.PRNGKey(32), (6, 8, 10))
         fine_inner_product = jnp.vdot(_prolong(coarse, factors), fine)
         coarse_inner_product = 8.0 * jnp.vdot(coarse, _restrict(fine, factors))
-        self.assertLess(float(jnp.abs(fine_inner_product - coarse_inner_product)), 1.0e-12)
+        self.assertLess(
+            float(jnp.abs(fine_inner_product - coarse_inner_product)),
+            1.0e-12,
+        )
+
+        fine_grid = AnalyticalGrid(
+            8,
+            8,
+            8,
+            2.0,
+            1.5,
+            1.0,
+            TanhMapping(0.8),
+            TanhMapping(0.6),
+            TanhMapping(1.2, focus=0.0),
+        )
+        coarse_grid = fine_grid.coarsen(factors)
+        coarse = jax.random.normal(
+            jax.random.PRNGKey(41),
+            (coarse_grid.nz, coarse_grid.ny, coarse_grid.nx),
+        )
+        integrated_fine = jax.random.normal(
+            jax.random.PRNGKey(42),
+            (fine_grid.nz, fine_grid.ny, fine_grid.nx),
+        )
+        prolonged = _prolong(
+            coarse,
+            factors,
+            fine_grid=fine_grid,
+            coarse_grid=coarse_grid,
+        )
+        restricted = _restrict(
+            integrated_fine,
+            factors,
+            fine_grid=fine_grid,
+            coarse_grid=coarse_grid,
+        )
+        self.assertLess(
+            float(
+                jnp.abs(
+                    jnp.vdot(prolonged, integrated_fine)
+                    - jnp.vdot(coarse, restricted)
+                )
+            ),
+            1.0e-11,
+        )
+        self.assertLess(
+            float(jnp.abs(jnp.sum(restricted) - jnp.sum(integrated_fine))),
+            1.0e-11,
+        )
+        constant = _prolong(
+            jnp.ones_like(coarse),
+            factors,
+            fine_grid=fine_grid,
+            coarse_grid=coarse_grid,
+        )
+        self.assertTrue(bool(jnp.allclose(constant, 1.0)))
 
 
 class GmgConfigurationTest(unittest.TestCase):

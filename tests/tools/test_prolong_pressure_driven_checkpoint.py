@@ -6,6 +6,7 @@ from tools.prolong_pressure_driven_checkpoint import (
     prolong_cell_field,
     prolong_vertical_faces,
 )
+from tools.prolong_fv_checkpoint import prolong_periodic_face_field
 
 
 def test_cell_prolongation_preserves_constant_and_shape() -> None:
@@ -16,6 +17,18 @@ def test_cell_prolongation_preserves_constant_and_shape() -> None:
     assert result.shape == (4, 6, 8)
     assert result.dtype == np.float32
     np.testing.assert_array_equal(result, np.full(result.shape, 7.25))
+
+    periodic_faces = np.broadcast_to(
+        np.arange(4, dtype=np.float32)[None, None, :], (2, 3, 4)
+    )
+    prolonged_faces = prolong_periodic_face_field(
+        periodic_faces, (4, 6, 8), face_axis=2
+    )
+    assert prolonged_faces.shape == (4, 6, 8)
+    np.testing.assert_allclose(
+        prolonged_faces[0, 0],
+        np.asarray((0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 1.5)),
+    )
 
 
 def test_cell_prolongation_clamps_vertical_cell_centres() -> None:

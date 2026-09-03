@@ -1,0 +1,28 @@
+[case]
+name = "hitsz_periodic_low_mach_warmup_256x64x32_900s"
+
+[restart]
+source_workflow = "fv_uniform_256x64x32_l24_low_mach_sanity.toml"
+initial_condition = "configured"
+
+[time]
+dt_seconds = 0.01
+steps = 90000
+chunk_steps = 500
+frame_count = 100
+
+[thermodynamics]
+temperature_k = 300.0
+pressure_pa = 101325.0
+water_vapor_mixing_ratio = 0.017996758222579956
+air_gas_constant_j_kg_k = 287.05
+nitrogen_gas_constant_j_kg_k = 296.8
+water_vapor_gas_constant_j_kg_k = 461.5
+gravity_m_s2 = [0.0, 0.0, -9.81]
+
+[numerics]
+pressure_backend = "fft"
+time_integration = "fast-rk3"
+
+[output]
+directory = "outputs/hitsz_low_mach_sanity/fv_256x64x32_900s"

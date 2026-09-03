@@ -14,14 +14,18 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
-from .operators import advection, diffusion, pressure_gradient, stable_timestep
+from .operators import _cells_to_faces, advection, diffusion, pressure_gradient, stable_timestep
 from .poisson import PressurePoisson, project
 from .rotation import CoriolisGeostrophic, coriolis_tendency
-from .sgs import AnisotropicMinimumDissipation, subfilter_tendency
+from .sgs import (
+    AnisotropicMinimumDissipation,
+    StaticSmagorinsky,
+    subfilter_tendency,
+)
 from .state import Boundaries, StaggeredVelocity, enforce_impermeability, zeros
-from .wall import MoninObukhovWall, wall_tendency
+from .wall import MoninObukhovWall, sidewall_tendency, wall_tendency
 
 
 # Wray's low-storage three-stage scheme, the standard explicit choice for
@@ -46,20 +50,22 @@ class FlowModel:
 
     ``subfilter`` selects the large-eddy closure.  It defaults to none, so a
     direct simulation is what an unconfigured model gives; set it to an
-    :class:`~jaxwind.fv.sgs.AnisotropicMinimumDissipation` instance to run a
-    large-eddy simulation.
+    :class:`~jaxwind.fv.sgs.AnisotropicMinimumDissipation` or
+    :class:`~jaxwind.fv.sgs.StaticSmagorinsky` instance to run a large-eddy
+    simulation.
     """
 
     viscosity: float = 0.0
     body_force: tuple[float, float, float] = (0.0, 0.0, 0.0)
     forcing: Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity] | None = None
-    subfilter: AnisotropicMinimumDissipation | None = None
+    subfilter: AnisotropicMinimumDissipation | StaticSmagorinsky | None = None
     surface: MoninObukhovWall | None = None
+    sidewalls: MoninObukhovWall | None = None
     rotation: CoriolisGeostrophic | None = None
 
 
 def initial_solution(
-    grid: UniformGrid,
+    grid: Grid,
     velocity: StaggeredVelocity | None = None,
     *,
     dtype: str = "float64",
@@ -103,7 +109,7 @@ def _combine(
 
 
 def build_tendency(
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries,
     model: FlowModel,
 ) -> Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity]:
@@ -130,6 +136,8 @@ def build_tendency(
             )
         if model.surface is not None:
             total = _add(total, wall_tendency(velocity, grid, model.surface))
+        if model.sidewalls is not None:
+            total = _add(total, sidewall_tendency(velocity, grid, model.sidewalls))
         if model.rotation is not None:
             total = _add(total, coriolis_tendency(velocity, model.rotation))
         if model.subfilter is not None:
@@ -148,7 +156,7 @@ def build_tendency(
 
 
 def build_step(
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries,
     poisson: PressurePoisson,
     model: FlowModel,
@@ -215,7 +223,7 @@ def build_step(
         step_size = jnp.asarray(dt, velocity.x.dtype)
         # One gradient per step: the applied pressure is frozen across the
         # substages, so recomputing it would give the same answer three times.
-        lagged = pressure_gradient(pressure, grid)
+        lagged = pressure_gradient(pressure, grid, periodic_x=poisson.periodic_x, periodic_y=poisson.periodic_y)
         last = len(_RK3_CURRENT) - 1
         for stage, (current_weight, previous_weight) in enumerate(
             zip(_RK3_CURRENT, _RK3_PREVIOUS)
@@ -305,7 +313,7 @@ def build_run(
 
 def build_adaptive_run(
     step: Callable[[Solution, float], Solution],
-    grid: UniformGrid,
+    grid: Grid,
     *,
     cfl_ceiling: float,
     maximum_dt: float,

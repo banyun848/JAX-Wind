@@ -61,3 +61,4 @@ __pycache__/
 /cases/NeutralLogLawAMD/
 /*_gpu/
 legacy/fortran_cuda/job
+*.png

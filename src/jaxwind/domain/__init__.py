@@ -3,7 +3,7 @@
 from .axes import DomainAxis, MeshAxis, MeshCoordinate, MeshTopology
 from .boundaries import VerticalBoundary
 from .fields import AddressableField, Field, VerticalFaceField
-from .grid import UniformGrid
+from .grid import AnalyticalGrid, IdentityMapping, SinhMapping, TanhMapping, UniformGrid
 from .locations import CELL, ZFACE, Cell, Location, ZFace
 from .markers import (
     Accepted,
@@ -56,6 +56,7 @@ __all__ = [
     "CELL",
     "ZFACE",
     "AddressableField",
+    "AnalyticalGrid",
     "Accepted",
     "AcceptedClock",
     "BoussinesqScaleSystem",
@@ -73,6 +74,7 @@ __all__ = [
     "LasdTrajectoryYVelocity",
     "LasdTrajectoryZVelocity",
     "Location",
+    "IdentityMapping",
     "MeshAxis",
     "MeshCoordinate",
     "MeshTopology",
@@ -94,6 +96,8 @@ __all__ = [
     "Projected",
     "Replicated",
     "ScaleSystem",
+    "SinhMapping",
+    "TanhMapping",
     "ScalarLasdCoefficient",
     "ScalarLasdLm",
     "ScalarLasdMm",

@@ -1,0 +1,65 @@
+[case]
+name = "HITSZ inlet-boundary LN2 jet, low-Mach FV 128^3 mapped mesh"
+
+[domain]
+cells = [128, 128, 128]
+lengths_m = [3.0, 3.0, 1.8]
+
+[domain.mapping]
+# One-sided streamwise clustering at the inlet; transverse clustering follows
+# the nozzle axis. At strength 2.2 this gives approximately 2.58 mm at x=0,
+# 2.62 mm at y=1.5 m, and 1.55 mm at z=0.876 m.
+types = ["tanh", "tanh", "tanh"]
+focus_m = [0.0, 1.5, 0.876]
+strength = [2.2, 2.2, 2.2]
+
+[time]
+# The projected startup flow is faster than the prescribed 8 m/s axial speed;
+# this step targets a full-ramp CFL below 0.4 rather than just the inlet CFL.
+dt_seconds = 0.00002
+steps = 50000
+chunk_steps = 100
+checkpoint_every_steps = 5000
+
+[ambient]
+temperature_k = 300.0
+relative_humidity = 0.80
+water_vapor_mixing_ratio = 0.017996758222579956
+pressure_pa = 101325.0
+
+[walls]
+roughness_length_m = 1.6100320416141182e-5
+
+[source]
+mode = "inflow"
+gas_inlet_radius_m = 0.005
+gas_inlet_temperature_k = 77.34
+subgrid_jet_enabled = false
+subgrid_support_radius_cells = 2.5
+subgrid_transition_width_cells = 0.5
+subgrid_momentum_length_cells = 4.0
+subgrid_turbulence_intensity = 0.0
+subgrid_integral_scale_cells = 4.0
+subgrid_correlation_time_seconds = 3.0e-4
+subgrid_transverse_ratio = 1.0
+
+[jet]
+position_m = [0.0, 1.5, 0.876]
+radius_m = 0.005
+speed_m_s = 8.0
+mass_flow_rate_kg_s = 0.0125
+vapor_quality = 0.217596
+temperature_k = 77.34
+
+[numerics]
+flow_formulation = "low-mach"
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 2
+gmg_postsweeps = 2
+momentum_closure = "amd"
+time_integration = "rk3"
+dtype = "float32"
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_128_3x3x1p8_inlet_low_mach_rk3_mapped_dt2e5"

@@ -373,9 +373,10 @@ class OracleFlowMixin:
         disk = model.actuator_disk
         if isinstance(disk, PureThrustActuatorDisk):
             dtype = velocity.x.payload.dtype
-            x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
-            y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
-            z = (jnp.arange(grid.nz, dtype=dtype) + 0.5) * grid.dz
+            x = jnp.asarray(grid.x_centers, dtype=dtype)
+            y = jnp.asarray(grid.y_centers, dtype=dtype)
+            z = jnp.asarray(grid.z_centers, dtype=dtype)
+            volumes = jnp.asarray(grid.cell_volumes, dtype=dtype)
             dx = jnp.mod(x - disk.x + 0.5 * grid.lx, grid.lx) - 0.5 * grid.lx
             dy = jnp.mod(y - disk.y + 0.5 * grid.ly, grid.ly) - 0.5 * grid.ly
             yaw = jnp.deg2rad(jnp.asarray(disk.yaw_degrees, dtype=dtype))
@@ -397,7 +398,7 @@ class OracleFlowMixin:
             )
             kernel = radial * streamwise
             disk_area = 0.25 * jnp.pi * (disk.diameter**2 - disk.hub_diameter**2)
-            kernel_integral = jnp.sum(kernel) * grid.dx * grid.dy * grid.dz
+            kernel_integral = jnp.sum(kernel * volumes)
             kernel = (
                 kernel
                 * disk_area
@@ -409,8 +410,9 @@ class OracleFlowMixin:
             normal_velocity = (
                 velocity.x.payload * normal_x + velocity.y.payload * normal_y
             )
-            disk_velocity = jnp.sum(normal_velocity * kernel) / jnp.maximum(
-                jnp.sum(kernel), jnp.finfo(dtype).tiny
+            weighted_kernel = kernel * volumes
+            disk_velocity = jnp.sum(normal_velocity * weighted_kernel) / jnp.maximum(
+                jnp.sum(weighted_kernel), jnp.finfo(dtype).tiny
             )
             correction = jnp.where(
                 disk.filtered_velocity_correction,
@@ -480,31 +482,71 @@ class OracleFlowMixin:
                     dtype=dtype,
                 )
             )
-            x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
-            y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
-            z_cells = (jnp.arange(grid.nz, dtype=dtype) + 0.5) * grid.dz
-            z_faces = jnp.arange(grid.nz + 1, dtype=dtype) * grid.dz
-            weights_x = gaussian_weights(
-                positions[:, 0],
-                x,
-                smoothing_width=line.smoothing_width,
-                period=grid.lx,
+            x = jnp.asarray(grid.x_centers, dtype=dtype)
+            y = jnp.asarray(grid.y_centers, dtype=dtype)
+            z_cells = jnp.asarray(grid.z_centers, dtype=dtype)
+            z_faces = jnp.asarray(grid.z_faces, dtype=dtype)
+            x_widths = jnp.asarray(grid.x_widths, dtype=dtype)
+            y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
+            z_widths = jnp.asarray(grid.z_widths, dtype=dtype)
+            z_face_widths = jnp.concatenate(
+                (
+                    0.5 * z_widths[:1],
+                    0.5 * (z_widths[:-1] + z_widths[1:]),
+                    0.5 * z_widths[-1:],
+                )
             )
-            weights_y = gaussian_weights(
-                positions[:, 1],
-                y,
-                smoothing_width=line.smoothing_width,
-                period=grid.ly,
+
+            def quadrature_weights(weights, widths):
+                weighted = weights * widths[None, :]
+                return weighted / jnp.maximum(
+                    jnp.sum(weighted, axis=1, keepdims=True),
+                    jnp.finfo(dtype).tiny,
+                )
+
+            point_widths = jnp.asarray(
+                line.point_smoothing_widths,
+                dtype=dtype,
             )
-            weights_z_cells = gaussian_weights(
-                positions[:, 2],
-                z_cells,
-                smoothing_width=line.smoothing_width,
+            weights_x = quadrature_weights(
+                gaussian_weights(
+                    positions[:, 0],
+                    x,
+                    smoothing_width=point_widths,
+                    period=grid.lx,
+                ),
+                x_widths,
             )
-            weights_z_faces = gaussian_weights(
-                positions[:, 2],
-                z_faces,
-                smoothing_width=line.smoothing_width,
+            weights_y = quadrature_weights(
+                gaussian_weights(
+                    positions[:, 1],
+                    y,
+                    smoothing_width=point_widths,
+                    period=grid.ly,
+                ),
+                y_widths,
+            )
+            weights_z_cells = quadrature_weights(
+                gaussian_weights(
+                    positions[:, 2],
+                    z_cells,
+                    smoothing_width=point_widths,
+                ),
+                z_widths,
+            )
+            weights_z_faces = quadrature_weights(
+                gaussian_weights(
+                    positions[:, 2],
+                    z_faces,
+                    smoothing_width=point_widths,
+                ),
+                z_face_widths,
+            )
+            spread_z_faces = weights_z_faces.at[:, 0].set(0.0)
+            spread_z_faces = spread_z_faces.at[:, -1].set(0.0)
+            spread_z_faces = spread_z_faces / jnp.maximum(
+                jnp.sum(spread_z_faces, axis=1, keepdims=True),
+                jnp.finfo(dtype).tiny,
             )
             sampled = jnp.stack(
                 (
@@ -572,32 +614,40 @@ class OracleFlowMixin:
                 root_loss=line.root_loss,
                 blade_velocity=blade_velocity,
             )
-            inverse_cell_volume = 1.0 / (grid.dx * grid.dy * grid.dz)
-            source_x = source_x + inverse_cell_volume * jnp.einsum(
+            cell_volumes = (
+                z_widths[:, None, None]
+                * y_widths[None, :, None]
+                * x_widths[None, None, :]
+            )
+            face_volumes = (
+                z_face_widths[:, None, None]
+                * y_widths[None, :, None]
+                * x_widths[None, None, :]
+            )
+            source_x = source_x + jnp.einsum(
                 "p,pz,py,px->zyx",
                 forces[:, 0],
                 weights_z_cells,
                 weights_y,
                 weights_x,
                 optimize="optimal",
-            )
-            source_y = source_y + inverse_cell_volume * jnp.einsum(
+            ) / cell_volumes
+            source_y = source_y + jnp.einsum(
                 "p,pz,py,px->zyx",
                 forces[:, 1],
                 weights_z_cells,
                 weights_y,
                 weights_x,
                 optimize="optimal",
-            )
-            source_z = source_z + inverse_cell_volume * jnp.einsum(
+            ) / cell_volumes
+            source_z = source_z + jnp.einsum(
                 "p,pz,py,px->zyx",
                 forces[:, 2],
-                weights_z_faces,
+                spread_z_faces,
                 weights_y,
                 weights_x,
                 optimize="optimal",
-            )
-            source_z = source_z.at[0].set(0.0).at[-1].set(0.0)
+            ) / face_volumes
         elif not isinstance(line, NoActuatorLine):
             raise TypeError("unsupported actuator-line choice")
 
@@ -616,7 +666,7 @@ class OracleFlowMixin:
             ):
                 raise ValueError("precursor target must share main-domain ownership")
             dtype = velocity.x.payload.dtype
-            x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
+            x = jnp.asarray(grid.x_centers, dtype=dtype)
             rise_width, fall_width = fringe.resolved_widths(grid.lx)
             mask = plateau_fringe_mask(
                 x,

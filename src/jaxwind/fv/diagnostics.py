@@ -2,7 +2,7 @@
 
 The prognostic solver deliberately carries only the fields needed to advance
 the equations.  This module reconstructs turbulence statistics from those
-fields at output times, using the same staggered interpolations and AMD
+fields at output times, using the same staggered interpolations and eddy-viscosity
 closure quantities as the momentum and scalar operators.
 """
 
@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
+from .metrics import center_distances
 from .operators import cell_velocity
 from .scalar import PassiveScalar
 from .sgs import (
     AnisotropicMinimumDissipation,
+    StaticSmagorinsky,
     cell_gradients,
     eddy_viscosity,
     edge_gradients,
@@ -57,11 +59,11 @@ def atmospheric_profile_diagnostics(
     velocity: StaggeredVelocity,
     pressure: jnp.ndarray,
     scalar: jnp.ndarray,
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries,
     wall: MoninObukhovWall | None,
     scalar_model: PassiveScalar,
-    subfilter: AnisotropicMinimumDissipation,
+    subfilter: AnisotropicMinimumDissipation | StaticSmagorinsky,
     *,
     x_velocity_offset: float = 0.0,
     y_velocity_offset: float = 0.0,
@@ -76,7 +78,7 @@ def atmospheric_profile_diagnostics(
 
     Momentum and scalar SGS fluxes use the sign convention of resolved
     covariances: a downward surface momentum flux is negative and the imposed
-    upward scalar flux is positive.  AMD has no prognostic SGS energy, so no
+    upward scalar flux is positive.  These closures have no prognostic SGS energy, so no
     modeled SGS-TKE contribution is fabricated.
     """
 
@@ -157,7 +159,9 @@ def atmospheric_profile_diagnostics(
     interior_diffusivity = 0.5 * (diffusivity[:-1] + diffusivity[1:])
     interior_scalar_flux = -interior_diffusivity * (
         scalar[1:] - scalar[:-1]
-    ) / grid.dz
+    ) / center_distances(
+        grid, 0, periodic=False, dtype=scalar.dtype
+    )[1:-1, None, None]
     resolved_lower_flux = (
         scalar_model.lower_flux
         if lower_scalar_flux is None
@@ -180,12 +184,16 @@ def atmospheric_profile_diagnostics(
     sgs_uc = _plane_mean(
         -x_diffusivity
         * (scalar - jnp.roll(scalar, 1, axis=2))
-        / grid.dx
+        / center_distances(
+            grid, 2, periodic=True, dtype=scalar.dtype
+        )[None, None, :]
     )
     sgs_vc = _plane_mean(
         -y_diffusivity
         * (scalar - jnp.roll(scalar, 1, axis=1))
-        / grid.dy
+        / center_distances(
+            grid, 1, periodic=True, dtype=scalar.dtype
+        )[None, :, None]
     )
 
     pressure_mean, pressure_fluctuation = _cell_fluctuations(pressure)
@@ -244,7 +252,7 @@ def atmospheric_profile_diagnostics(
 
 def atmospheric_history_diagnostics(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
     wall: MoninObukhovWall,
     *,
     coriolis: float,
@@ -263,8 +271,12 @@ def atmospheric_history_diagnostics(
     stress_x, stress_y = surface_stress(velocity, grid, wall)
     surface_uw = -jnp.mean(stress_x)
     surface_vw = -jnp.mean(stress_y)
-    integrated_u_deficit = jnp.sum(mean_u - geostrophic_u) * grid.dz
-    integrated_v_deficit = jnp.sum(mean_v - geostrophic_v) * grid.dz
+    integrated_u_deficit = jnp.sum(
+        (mean_u - geostrophic_u) * jnp.asarray(grid.z_widths)
+    )
+    integrated_v_deficit = jnp.sum(
+        (mean_v - geostrophic_v) * jnp.asarray(grid.z_widths)
+    )
     tiny = jnp.finfo(velocity.x.dtype).tiny
     stationarity_u = jnp.where(
         jnp.abs(surface_uw) > tiny,
@@ -276,7 +288,9 @@ def atmospheric_history_diagnostics(
         coriolis * integrated_u_deficit / surface_vw,
         jnp.nan,
     )
-    integrated = jnp.sum(resolved_tke) * grid.dz
+    integrated = jnp.sum(
+        resolved_tke * jnp.asarray(grid.z_widths, resolved_tke.dtype)
+    )
     return {
         "surface_uw_m2_s2": surface_uw,
         "surface_vw_m2_s2": surface_vw,

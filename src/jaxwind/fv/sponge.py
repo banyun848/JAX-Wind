@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 from .state import StaggeredVelocity, cell_coordinates, face_coordinates
 
@@ -36,7 +36,7 @@ def _ramp(height: jnp.ndarray, start_height: float, top: float, power: float) ->
 
 
 def rayleigh_sponge_tendency(
-    grid: UniformGrid,
+    grid: Grid,
     *,
     start_height: float,
     timescale: float,

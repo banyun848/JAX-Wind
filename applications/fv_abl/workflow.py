@@ -32,16 +32,20 @@ class WorkflowOptions:
     record_plane: int
     chunk_steps: int
     output_directory: Path
+    input_directory: Path | None = None
     precursor_dt_seconds: float | None = None
+    precursor_frame_count: int = 0
     main_dt_seconds: float | None = None
     main_frame_count: int = 0
     main_pressure_force: bool = True
     evolve_scalar: bool = True
+    main_substeps_per_inflow: int = 1
+    warmup_restart_checkpoint: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class OpenFastAdbemOptions:
-    """Physical placement and fixed operating point for an OpenFAST rotor."""
+class TurbineOptions:
+    """Physical placement and fixed operating point for AD-BEM or ALM."""
 
     model: str
     model_environment: str | None
@@ -51,17 +55,78 @@ class OpenFastAdbemOptions:
     rotor_speed_rpm: float
     blade_pitch_degrees: float
     smoothing_width_m: float
+    smoothing_width_chord_factor: float | None
     smearing_azimuthal_elements: int
+    initial_azimuth_degrees: float
     body_smoothing_width_m: float
     nacelle_drag_coefficient: float
     tower_drag_coefficient: float
 
 
+
+@dataclass(frozen=True, slots=True)
+class NacelleCoolingOptions:
+    """Thermodynamic calibration and resolved support of the LN2 spray."""
+
+    mass_flow_rate_kg_s: float
+    exit_vapor_quality: float
+    injection_temperature_k: float
+    ambient_temperature_k: float
+    liquid_latent_heat_j_kg: float
+    nitrogen_heat_capacity_j_kg_k: float
+    air_density_kg_m3: float
+    air_heat_capacity_j_kg_k: float
+    thermal_coupling_efficiency: float
+    streamwise_offset_m: float
+    standard_deviation_m: tuple[float, float, float]
+    ramp_time_s: float
+    nozzle_diameter_m: float | None = None
+    injection_speed_m_s: float | None = None
+    cone_half_angle_degrees: float = 0.0
+    pre_nozzle_vapor_quality: float = 0.0
+
+    @property
+    def cooling_power_w(self) -> float:
+        latent = (
+            (1.0 - self.exit_vapor_quality)
+            * self.liquid_latent_heat_j_kg
+        )
+        sensible = self.nitrogen_heat_capacity_j_kg_k * (
+            self.ambient_temperature_k - self.injection_temperature_k
+        )
+        return (
+            self.thermal_coupling_efficiency
+            * self.mass_flow_rate_kg_s
+            * (latent + sensible)
+        )
+
+    @property
+    def has_momentum_jet(self) -> bool:
+        return (
+            self.nozzle_diameter_m is not None
+            and self.injection_speed_m_s is not None
+        )
+
+    @property
+    def axial_momentum_flux_n(self) -> float:
+        if self.injection_speed_m_s is None:
+            return 0.0
+        return self.mass_flow_rate_kg_s * self.injection_speed_m_s
+
+    @property
+    def exit_vapor_mass_flow_rate_kg_s(self) -> float:
+        return self.mass_flow_rate_kg_s * self.exit_vapor_quality
+
+    @property
+    def exit_liquid_mass_flow_rate_kg_s(self) -> float:
+        return self.mass_flow_rate_kg_s * (1.0 - self.exit_vapor_quality)
+
 @dataclass(frozen=True, slots=True)
 class FiniteVolumeWorkflow:
     case: FiniteVolumeCase
     options: WorkflowOptions
-    turbine: OpenFastAdbemOptions | None = None
+    turbine: TurbineOptions | None = None
+    cooling: NacelleCoolingOptions | None = None
 
     def resolved(self) -> dict[str, Any]:
         grid = self.case.physical.physical_grid
@@ -78,6 +143,11 @@ class FiniteVolumeWorkflow:
                 "maximum_dt_seconds": self.case.physical.dt_seconds,
                 "cfl_ceiling": self.case.options.cfl_ceiling,
                 "checkpoint": "warmup_checkpoint.npz",
+                "restart_checkpoint": (
+                    None
+                    if self.options.warmup_restart_checkpoint is None
+                    else str(self.options.warmup_restart_checkpoint)
+                ),
             },
             "precursor": {
                 "pressure_backend": "fft",
@@ -97,6 +167,7 @@ class FiniteVolumeWorkflow:
                     else None
                 ),
                 "record_plane": self.options.record_plane,
+                "frame_count": self.options.precursor_frame_count,
                 "stored_x_layers_per_sample": 1,
                 "sample_every_steps": 1,
                 "directory": "precursor_inflow",
@@ -113,22 +184,38 @@ class FiniteVolumeWorkflow:
                         or self.case.physical.dt_seconds
                     )
                 ),
-                "dt_seconds": (
+                "inflow_dt_seconds": (
                     self.options.main_dt_seconds
                     or self.options.precursor_dt_seconds
                     or self.case.physical.dt_seconds
+                ),
+                "substeps_per_inflow": self.options.main_substeps_per_inflow,
+                "integration_steps": (
+                    self.options.main_steps
+                    * self.options.main_substeps_per_inflow
+                ),
+                "dt_seconds": (
+                    (
+                        self.options.main_dt_seconds
+                        or self.options.precursor_dt_seconds
+                        or self.case.physical.dt_seconds
+                    )
+                    / self.options.main_substeps_per_inflow
                 ),
                 "time_integration": self.case.options.time_integration,
                 "frame_count": self.options.main_frame_count,
                 "pressure_force": self.options.main_pressure_force,
                 "evolve_scalar": self.options.evolve_scalar,
-                "inflow": "one recorded yz layer per step",
+                "inflow": "one recorded yz layer held across configured substeps",
                 "outflow": "second-order zero-gradient transported fields",
                 "pressure_boundary": "inlet Neumann, outlet Dirichlet",
                 "x_velocity_faces": grid.nx + 1,
             },
             "chunk_steps": self.options.chunk_steps,
             "output_directory": str(self.options.output_directory),
+            "input_directory": str(
+                self.options.input_directory or self.options.output_directory
+            ),
             "turbine": (
                 None
                 if self.turbine is None
@@ -140,10 +227,54 @@ class FiniteVolumeWorkflow:
                     "hub_height_m": self.turbine.hub_height_m,
                     "rotor_speed_rpm": self.turbine.rotor_speed_rpm,
                     "blade_pitch_degrees": self.turbine.blade_pitch_degrees,
+                    "smoothing_width_chord_factor": (
+                        self.turbine.smoothing_width_chord_factor
+                    ),
                     "smearing_azimuthal_elements": (
                         self.turbine.smearing_azimuthal_elements
+                        if self.turbine.model.endswith("ad-bem")
+                        else None
+                    ),
+                    "initial_azimuth_degrees": (
+                        self.turbine.initial_azimuth_degrees
                     ),
                     "nacelle_and_tower": True,
+                }
+            ),
+            "cooling": (
+                None
+                if self.cooling is None
+                else {
+                    "model": (
+                        "conservative-unresolved-round-jet"
+                        if self.cooling.has_momentum_jet
+                        and self.cooling.cone_half_angle_degrees == 0.0
+                        else "conservative-gaussian-temperature-sink"
+                    ),
+                    "mass_flow_rate_kg_s": self.cooling.mass_flow_rate_kg_s,
+                    "exit_vapor_quality": self.cooling.exit_vapor_quality,
+                    "pre_nozzle_vapor_quality": (
+                        self.cooling.pre_nozzle_vapor_quality
+                    ),
+                    "exit_vapor_mass_flow_rate_kg_s": (
+                        self.cooling.exit_vapor_mass_flow_rate_kg_s
+                    ),
+                    "exit_liquid_mass_flow_rate_kg_s": (
+                        self.cooling.exit_liquid_mass_flow_rate_kg_s
+                    ),
+                    "cooling_power_w": self.cooling.cooling_power_w,
+                    "nozzle_diameter_m": self.cooling.nozzle_diameter_m,
+                    "injection_speed_m_s": self.cooling.injection_speed_m_s,
+                    "axial_momentum_flux_n": self.cooling.axial_momentum_flux_n,
+                    "cone_half_angle_degrees": self.cooling.cone_half_angle_degrees,
+                    "thermal_coupling_efficiency": (
+                        self.cooling.thermal_coupling_efficiency
+                    ),
+                    "streamwise_offset_m": self.cooling.streamwise_offset_m,
+                    "standard_deviation_m": (
+                        self.cooling.standard_deviation_m
+                    ),
+                    "ramp_time_s": self.cooling.ramp_time_s,
                 }
             ),
         }
@@ -168,19 +299,25 @@ def _finite_number(table: dict[str, Any], key: str) -> float:
     return result
 
 
-def _load_turbine(document: dict[str, Any]) -> OpenFastAdbemOptions | None:
+def _load_turbine(document: dict[str, Any]) -> TurbineOptions | None:
     table = document.get("finite_volume_turbine")
     if table is None:
         return None
     if not isinstance(table, dict):
         raise ValueError("[finite_volume_turbine] must be a table")
+    models = (
+        "openfast-ad-bem",
+        "hitsz-r9-ad-bem",
+        "openfast-alm",
+        "hitsz-r9-alm",
+    )
     model = table.get("model")
-    if model not in ("openfast-ad-bem", "hitsz-r9-ad-bem"):
+    if model not in models:
         raise ValueError(
-            "finite_volume_turbine.model must be openfast-ad-bem "
-            "or hitsz-r9-ad-bem"
+            "finite_volume_turbine.model must be one of: "
+            + ", ".join(models)
         )
-    common = {
+    required = {
         "model",
         "x_m",
         "y_m",
@@ -188,18 +325,22 @@ def _load_turbine(document: dict[str, Any]) -> OpenFastAdbemOptions | None:
         "rotor_speed_rpm",
         "blade_pitch_degrees",
         "smoothing_width_m",
-        "smearing_azimuthal_elements",
         "body_smoothing_width_m",
         "nacelle_drag_coefficient",
         "tower_drag_coefficient",
     }
-    expected = (
-        common | {"openfast_model_environment"}
-        if model == "openfast-ad-bem"
-        else common
-    )
-    missing = expected - table.keys()
-    unknown = table.keys() - expected
+    allowed = required | {
+        "smearing_azimuthal_elements",
+        "initial_azimuth_degrees",
+        "smoothing_width_chord_factor",
+    }
+    if model.startswith("openfast-"):
+        required.add("openfast_model_environment")
+        allowed.add("openfast_model_environment")
+    if model.endswith("ad-bem"):
+        required.add("smearing_azimuthal_elements")
+    missing = required - table.keys()
+    unknown = table.keys() - allowed
     if missing:
         raise ValueError(
             "[finite_volume_turbine] is missing: "
@@ -211,13 +352,13 @@ def _load_turbine(document: dict[str, Any]) -> OpenFastAdbemOptions | None:
             + ", ".join(sorted(unknown))
         )
     environment = table.get("openfast_model_environment")
-    if model == "openfast-ad-bem" and (
+    if model.startswith("openfast-") and (
         not isinstance(environment, str) or not environment
     ):
         raise ValueError(
             "finite_volume_turbine.openfast_model_environment must be a string"
         )
-    smearing = table["smearing_azimuthal_elements"]
+    smearing = table.get("smearing_azimuthal_elements", 64)
     if (
         isinstance(smearing, bool)
         or not isinstance(smearing, int)
@@ -226,7 +367,41 @@ def _load_turbine(document: dict[str, Any]) -> OpenFastAdbemOptions | None:
         raise ValueError(
             "finite_volume_turbine.smearing_azimuthal_elements must be positive"
         )
-    result = OpenFastAdbemOptions(
+    initial_azimuth = table.get("initial_azimuth_degrees", 0.0)
+    if isinstance(initial_azimuth, bool) or not isinstance(
+        initial_azimuth, (int, float)
+    ):
+        raise ValueError(
+            "finite_volume_turbine.initial_azimuth_degrees must be a number"
+        )
+    import math
+
+    initial_azimuth = float(initial_azimuth)
+    if not math.isfinite(initial_azimuth):
+        raise ValueError(
+            "finite_volume_turbine.initial_azimuth_degrees must be finite"
+        )
+    chord_factor = table.get("smoothing_width_chord_factor")
+    if chord_factor is not None:
+        if isinstance(chord_factor, bool) or not isinstance(
+            chord_factor, (int, float)
+        ):
+            raise ValueError(
+                "finite_volume_turbine.smoothing_width_chord_factor must "
+                "be a number"
+            )
+        chord_factor = float(chord_factor)
+        if not math.isfinite(chord_factor) or chord_factor <= 0.0:
+            raise ValueError(
+                "finite_volume_turbine.smoothing_width_chord_factor must "
+                "be positive and finite"
+            )
+        if model.endswith("ad-bem"):
+            raise ValueError(
+                "finite_volume_turbine.smoothing_width_chord_factor is "
+                "only valid for an ALM"
+            )
+    result = TurbineOptions(
         model=model,
         model_environment=environment,
         x_m=_finite_number(table, "x_m"),
@@ -235,7 +410,9 @@ def _load_turbine(document: dict[str, Any]) -> OpenFastAdbemOptions | None:
         rotor_speed_rpm=_finite_number(table, "rotor_speed_rpm"),
         blade_pitch_degrees=_finite_number(table, "blade_pitch_degrees"),
         smoothing_width_m=_finite_number(table, "smoothing_width_m"),
+        smoothing_width_chord_factor=chord_factor,
         smearing_azimuthal_elements=smearing,
+        initial_azimuth_degrees=initial_azimuth,
         body_smoothing_width_m=_finite_number(table, "body_smoothing_width_m"),
         nacelle_drag_coefficient=_finite_number(
             table, "nacelle_drag_coefficient"
@@ -252,6 +429,147 @@ def _load_turbine(document: dict[str, Any]) -> OpenFastAdbemOptions | None:
     ) <= 0.0:
         raise ValueError("finite-volume turbine dimensions and speed must be positive")
     return result
+
+
+def _load_cooling(document: dict[str, Any]) -> NacelleCoolingOptions | None:
+    table = document.get("finite_volume_cooling")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise ValueError("[finite_volume_cooling] must be a table")
+    expected = {
+        "mass_flow_rate_kg_s",
+        "exit_vapor_quality",
+        "injection_temperature_k",
+        "ambient_temperature_k",
+        "liquid_latent_heat_j_kg",
+        "nitrogen_heat_capacity_j_kg_k",
+        "air_density_kg_m3",
+        "air_heat_capacity_j_kg_k",
+        "thermal_coupling_efficiency",
+        "streamwise_offset_m",
+        "standard_deviation_m",
+        "ramp_time_s",
+    }
+    optional = {
+        "nozzle_diameter_m",
+        "injection_speed_m_s",
+        "cone_half_angle_degrees",
+        "pre_nozzle_vapor_quality",
+    }
+    missing = expected - table.keys()
+    unknown = table.keys() - expected - optional
+    if missing:
+        raise ValueError(
+            "[finite_volume_cooling] is missing: "
+            + ", ".join(sorted(missing))
+        )
+    if unknown:
+        raise ValueError(
+            "[finite_volume_cooling] has unknown keys: "
+            + ", ".join(sorted(unknown))
+        )
+
+    def number(key: str) -> float:
+        import math
+
+        value = table[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"finite_volume_cooling.{key} must be a number")
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(f"finite_volume_cooling.{key} must be finite")
+        return result
+
+    def optional_number(key: str, default: float | None) -> float | None:
+        if key not in table:
+            return default
+        return number(key)
+
+    has_diameter = "nozzle_diameter_m" in table
+    has_speed = "injection_speed_m_s" in table
+    if has_diameter != has_speed:
+        raise ValueError(
+            "cooling nozzle diameter and speed must be specified together"
+        )
+
+    raw_widths = table["standard_deviation_m"]
+    if not isinstance(raw_widths, list) or len(raw_widths) != 3:
+        raise ValueError(
+            "finite_volume_cooling.standard_deviation_m must have three values"
+        )
+    widths = tuple(float(value) for value in raw_widths)
+    result = NacelleCoolingOptions(
+        mass_flow_rate_kg_s=number("mass_flow_rate_kg_s"),
+        exit_vapor_quality=number("exit_vapor_quality"),
+        injection_temperature_k=number("injection_temperature_k"),
+        ambient_temperature_k=number("ambient_temperature_k"),
+        liquid_latent_heat_j_kg=number("liquid_latent_heat_j_kg"),
+        nitrogen_heat_capacity_j_kg_k=number(
+            "nitrogen_heat_capacity_j_kg_k"
+        ),
+        air_density_kg_m3=number("air_density_kg_m3"),
+        air_heat_capacity_j_kg_k=number("air_heat_capacity_j_kg_k"),
+        thermal_coupling_efficiency=number(
+            "thermal_coupling_efficiency"
+        ),
+        streamwise_offset_m=number("streamwise_offset_m"),
+        standard_deviation_m=widths,
+        ramp_time_s=number("ramp_time_s"),
+        nozzle_diameter_m=optional_number("nozzle_diameter_m", None),
+        injection_speed_m_s=optional_number("injection_speed_m_s", None),
+        cone_half_angle_degrees=float(
+            optional_number("cone_half_angle_degrees", 0.0)
+        ),
+        pre_nozzle_vapor_quality=float(
+            optional_number("pre_nozzle_vapor_quality", 0.0)
+        ),
+    )
+    positive = (
+        result.mass_flow_rate_kg_s,
+        result.injection_temperature_k,
+        result.ambient_temperature_k,
+        result.liquid_latent_heat_j_kg,
+        result.nitrogen_heat_capacity_j_kg_k,
+        result.air_density_kg_m3,
+        result.air_heat_capacity_j_kg_k,
+        result.streamwise_offset_m,
+        *result.standard_deviation_m,
+    )
+    if not all(value > 0.0 for value in positive):
+        raise ValueError(
+            "finite-volume cooling properties, offset, and widths must be positive"
+        )
+    if result.injection_temperature_k >= result.ambient_temperature_k:
+        raise ValueError(
+            "finite_volume_cooling injection temperature must be below ambient"
+        )
+    if not 0.0 <= result.exit_vapor_quality <= 1.0:
+        raise ValueError(
+            "finite_volume_cooling.exit_vapor_quality must lie in [0, 1]"
+        )
+    if not 0.0 < result.thermal_coupling_efficiency <= 1.0:
+        raise ValueError(
+            "finite_volume_cooling.thermal_coupling_efficiency "
+            "must lie in (0, 1]"
+        )
+    if result.ramp_time_s < 0.0:
+        raise ValueError("finite_volume_cooling.ramp_time_s must be nonnegative")
+    if result.has_momentum_jet and not (
+        result.nozzle_diameter_m > 0.0 and result.injection_speed_m_s > 0.0
+    ):
+        raise ValueError("cooling nozzle diameter and speed must be positive")
+    if not 0.0 <= result.cone_half_angle_degrees < 90.0:
+        raise ValueError(
+            "finite_volume_cooling.cone_half_angle_degrees must lie in [0, 90)"
+        )
+    if not 0.0 <= result.pre_nozzle_vapor_quality <= result.exit_vapor_quality:
+        raise ValueError(
+            "finite_volume_cooling.pre_nozzle_vapor_quality must lie between "
+            "zero and exit_vapor_quality"
+        )
+    return result
+
 
 def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
     """Load the physical case, FV numerics, and strict stage workflow."""
@@ -272,10 +590,14 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
     missing = expected - table.keys()
     unknown = table.keys() - expected - {
         "precursor_dt_seconds",
+        "precursor_frame_count",
         "main_dt_seconds",
         "main_frame_count",
         "main_pressure_force",
         "evolve_scalar",
+        "input_directory",
+        "main_substeps_per_inflow",
+        "warmup_restart_checkpoint",
     }
     if missing:
         raise ValueError(
@@ -286,6 +608,21 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
         raise ValueError(
             "[finite_volume_workflow] has unknown keys: "
             + ", ".join(sorted(unknown))
+        )
+    input_value = table.get("input_directory")
+    if input_value is not None and (
+        not isinstance(input_value, str) or not input_value
+    ):
+        raise ValueError(
+            "finite_volume_workflow.input_directory must be a non-empty string"
+        )
+    restart_value = table.get("warmup_restart_checkpoint")
+    if restart_value is not None and (
+        not isinstance(restart_value, str) or not restart_value
+    ):
+        raise ValueError(
+            "finite_volume_workflow.warmup_restart_checkpoint must be a "
+            "non-empty string"
         )
     output = table["output_directory"]
     if not isinstance(output, str) or not output:
@@ -306,11 +643,15 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
         record_plane=record_plane,
         chunk_steps=_positive_integer(table, "chunk_steps"),
         output_directory=Path(output),
+        input_directory=(
+            None if input_value is None else Path(input_value)
+        ),
         precursor_dt_seconds=(
             _finite_number(table, "precursor_dt_seconds")
             if "precursor_dt_seconds" in table
             else None
         ),
+        precursor_frame_count=table.get("precursor_frame_count", 0),
         main_dt_seconds=(
             _finite_number(table, "main_dt_seconds")
             if "main_dt_seconds" in table
@@ -319,6 +660,14 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
         main_frame_count=table.get("main_frame_count", 0),
         main_pressure_force=table.get("main_pressure_force", True),
         evolve_scalar=table.get("evolve_scalar", True),
+        main_substeps_per_inflow=(
+            _positive_integer(table, "main_substeps_per_inflow")
+            if "main_substeps_per_inflow" in table
+            else 1
+        ),
+        warmup_restart_checkpoint=(
+            None if restart_value is None else Path(restart_value)
+        ),
     )
     if (
         options.precursor_dt_seconds is not None
@@ -330,6 +679,16 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
     if options.main_dt_seconds is not None and options.main_dt_seconds <= 0.0:
         raise ValueError(
             "finite_volume_workflow.main_dt_seconds must be positive"
+        )
+    if (
+        isinstance(options.precursor_frame_count, bool)
+        or not isinstance(options.precursor_frame_count, int)
+        or options.precursor_frame_count < 0
+        or options.precursor_frame_count > options.precursor_steps
+    ):
+        raise ValueError(
+            "finite_volume_workflow.precursor_frame_count must be between "
+            "zero and precursor_steps"
         )
     if (
         isinstance(options.main_frame_count, bool)
@@ -351,7 +710,17 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
         )
     if options.main_steps > options.precursor_steps:
         raise ValueError("main_steps cannot exceed recorded precursor_steps")
-    return FiniteVolumeWorkflow(case, options, _load_turbine(document))
+    turbine = _load_turbine(document)
+    cooling = _load_cooling(document)
+    if cooling is not None:
+        if turbine is None:
+            raise ValueError("finite-volume cooling requires a turbine")
+        if not options.evolve_scalar:
+            raise ValueError("finite-volume cooling requires evolve_scalar=true")
+        source_x = turbine.x_m + cooling.streamwise_offset_m
+        if source_x >= grid.lx:
+            raise ValueError("the nacelle cooling source lies outside the domain")
+    return FiniteVolumeWorkflow(case, options, turbine, cooling)
 
 
 def _models(
@@ -365,7 +734,7 @@ def _models(
     """Compose identical physical closures for each workflow stage."""
     from jaxwind.fv import (
         AnisotropicMinimumDissipation,
-        CELL_CENTRE,
+        CELL_AVERAGE,
         LOCAL,
         OPEN,
         Boundaries,
@@ -400,7 +769,7 @@ def _models(
         wall = MoninObukhovWall(
             configuration["roughness_length_m"],
             von_karman=case.model.momentum.wall.von_karman,
-            sampling=CELL_CENTRE,
+            sampling=CELL_AVERAGE,
             averaging=LOCAL,
         )
     else:
@@ -440,6 +809,7 @@ def _models(
         PassiveScalar(
             lower_flux=configuration["scalar_surface_flux"],
             turbulent_prandtl=configured.options.turbulent_prandtl,
+            advection_scheme=configured.options.scalar_advection_scheme,
         )
         if evolve_scalar
         else None
@@ -458,7 +828,7 @@ def _models(
     return boundaries, momentum, scalar, buoyancy, surface
 
 
-def _openfast_path(options: OpenFastAdbemOptions) -> Path:
+def _openfast_path(options: TurbineOptions) -> Path:
     environment = options.model_environment
     if environment is None:
         raise ValueError("the native HITSZ rotor does not use an OpenFAST path")
@@ -469,6 +839,22 @@ def _openfast_path(options: OpenFastAdbemOptions) -> Path:
     if not path.is_file():
         raise FileNotFoundError(f"OpenFAST model does not exist: {path}")
     return path
+
+
+def _lower_actuator_line(turbine, options: TurbineOptions, scales):
+    line = turbine.to_actuator_line(
+        scales=scales,
+        initial_azimuth_degrees=options.initial_azimuth_degrees,
+    )
+    factor = options.smoothing_width_chord_factor
+    if factor is None:
+        return line
+    return replace(
+        line,
+        element_gaussian_widths=tuple(
+            factor * chord for chord in line.element_chords
+        ),
+    )
 
 
 def _build_turbine_definition(workflow: FiniteVolumeWorkflow):
@@ -493,7 +879,7 @@ def _build_turbine_definition(workflow: FiniteVolumeWorkflow):
         "nacelle_drag_coefficient": options.nacelle_drag_coefficient,
         "tower_drag_coefficient": options.tower_drag_coefficient,
     }
-    if options.model == "hitsz-r9-ad-bem":
+    if options.model.startswith("hitsz-r9-"):
         turbine = HITSZR9BladeElementDisk(**common)
     else:
         rotor = load_openfast_rigid_turbine(_openfast_path(options))
@@ -502,12 +888,19 @@ def _build_turbine_definition(workflow: FiniteVolumeWorkflow):
     from jaxwind.domain import ScaleSystem
 
     grid = workflow.case.physical.physical_grid
-    disk = turbine.to_actuator_disk(scales=ScaleSystem(1.0, 1.0))
-    if not 0.0 < disk.x < grid.lx:
+    scales = ScaleSystem(1.0, 1.0)
+    rotor = (
+        _lower_actuator_line(turbine, options, scales)
+        if options.model.endswith("alm")
+        else turbine.to_actuator_disk(scales=scales)
+    )
+    if not 0.0 < rotor.x < grid.lx:
         raise ValueError("finite-volume turbine x position is outside the domain")
-    if not 0.0 < disk.y < grid.ly:
+    if not 0.0 < rotor.y < grid.ly:
         raise ValueError("finite-volume turbine y position is outside the domain")
-    if disk.z + disk.tip_radius >= grid.lz:
+    if rotor.z - rotor.tip_radius <= 0.0:
+        raise ValueError("finite-volume turbine rotor intersects the lower boundary")
+    if rotor.z + rotor.tip_radius >= grid.lz:
         raise ValueError("finite-volume turbine rotor intersects the upper boundary")
     return turbine
 
@@ -517,14 +910,48 @@ def _build_turbine_forcing(workflow: FiniteVolumeWorkflow):
     if turbine is None:
         return None
     from jaxwind.domain import ScaleSystem
-    from jaxwind.fv import build_adbem_forcing
+    from jaxwind.fv import build_adbem_forcing, build_actuator_line_forcing
 
     scales = ScaleSystem(1.0, 1.0)
+    grid = workflow.case.physical.physical_grid
+    body = turbine.to_nacelle_tower(scales=scales)
+    if workflow.turbine.model.endswith("alm"):
+        line = _lower_actuator_line(
+            turbine,
+            workflow.turbine,
+            scales,
+        )
+        return build_actuator_line_forcing(grid, line, body)
     return build_adbem_forcing(
-        workflow.case.physical.physical_grid,
+        grid,
         turbine.to_actuator_disk(scales=scales),
-        turbine.to_nacelle_tower(scales=scales),
+        body,
     )
+
+
+def _combine_forcings(*forcings):
+    """Add independently conservative momentum sources component-wise."""
+
+    active = tuple(forcing for forcing in forcings if forcing is not None)
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0]
+    from jaxwind.fv import StaggeredVelocity
+
+    def combined(velocity, time):
+        total = active[0](velocity, time)
+        for forcing in active[1:]:
+            other = forcing(velocity, time)
+            total = StaggeredVelocity(
+                total.x + other.x,
+                total.y + other.y,
+                total.z + other.z,
+            )
+        return total
+
+    return combined
+
 
 def _initial_periodic(configured: FiniteVolumeCase, jax, jnp):
     from jaxwind.fv import (
@@ -636,8 +1063,10 @@ def _run_periodic_blocks(
     chunk: int,
 ):
     import jax
+    import jax.numpy as jnp
     from jaxwind.fv import courant_number
 
+    initial_time = float(solution.time)
     completed = 0
     started = time.perf_counter()
     maximum_cfl = 0.0
@@ -647,6 +1076,13 @@ def _run_periodic_blocks(
         solution = advance(solution, dt, count)
         jax.block_until_ready(solution.velocity.x)
         completed += count
+        # Avoid O(steps * eps) drift from repeatedly accumulating a float32 dt.
+        solution = solution._replace(
+            time=jnp.asarray(
+                initial_time + completed * dt,
+                solution.time.dtype,
+            )
+        )
         final_cfl = float(courant_number(solution.velocity, grid, dt))
         maximum_cfl = max(maximum_cfl, final_cfl)
         print(
@@ -732,7 +1168,33 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
     jax.config.update("jax_enable_x64", case.pressure.dtype == "float64")
     import jax.numpy as jnp
 
-    solution = _initial_periodic(workflow.case, jax, jnp)
+    restart = workflow.options.warmup_restart_checkpoint
+    solution = (
+        _initial_periodic(workflow.case, jax, jnp)
+        if restart is None
+        else _load_solution(restart, jnp)
+    )
+    from jaxwind.fv import validate
+
+    validate(solution.velocity, case.physical_grid)
+    validate(solution.momentum_tendency, case.physical_grid)
+    expected_cells = (
+        case.physical_grid.nz,
+        case.physical_grid.ny,
+        case.physical_grid.nx,
+    )
+    for name, values in (
+        ("pressure", solution.pressure),
+        ("scalar", solution.scalar),
+        ("scalar_tendency", solution.scalar_tendency),
+    ):
+        if values.shape != expected_cells:
+            raise ValueError(
+                f"warmup restart {name} has shape {values.shape}, "
+                f"expected {expected_cells}"
+            )
+    initial_time = float(solution.time)
+    initial_step = int(solution.step)
     step, fixed_advance = _periodic_advance(workflow.case)
     duration_seconds = steps * case.dt_seconds
     if options.cfl_ceiling is None:
@@ -780,6 +1242,11 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         "cfl_ceiling": options.cfl_ceiling,
         "pressure_backend": "fft",
         "time_integration": options.time_integration,
+        "restart_checkpoint": None if restart is None else str(restart),
+        "start_time_seconds": initial_time,
+        "end_time_seconds": float(solution.time),
+        "start_step": initial_step,
+        "end_step": int(solution.step),
         "checkpoint": str(path),
     }
 
@@ -867,6 +1334,20 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
     )
     compiled: dict[int, Any] = {}
 
+    frame_steps = _main_frame_steps(
+        samples, workflow.options.precursor_frame_count
+    )
+    next_frame = 0
+    frames: list[dict[str, Any]] = []
+    turbine = workflow.turbine
+    frame_y = 0.5 * grid.ly if turbine is None else turbine.y_m
+    frame_z = 0.5 * grid.lz if turbine is None else turbine.hub_height_m
+    capture_precursor_frame = (
+        None
+        if not frame_steps
+        else _build_main_frame_capture(grid, y_m=frame_y, z_m=frame_z)
+    )
+
     def block(count: int):
         if count not in compiled:
             def scan(current, first_step):
@@ -924,6 +1405,8 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
     started = time.perf_counter()
     while completed < samples:
         count = min(workflow.options.chunk_steps, samples - completed)
+        if next_frame < len(frame_steps):
+            count = min(count, frame_steps[next_frame] - completed)
         solution, recorded = block(count)(
             solution, jnp.asarray(completed, jnp.int32)
         )
@@ -933,9 +1416,22 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
             arrays[name][completed:stop] = np.asarray(getattr(planes, name))
         timesteps[completed:stop] = np.asarray(block_timesteps)
         completed = stop
+        if next_frame < len(frame_steps) and completed == frame_steps[next_frame]:
+            frames.append(
+                _capture_main_frame(
+                    solution,
+                    grid,
+                    y_m=frame_y,
+                    z_m=frame_z,
+                    capture=capture_precursor_frame,
+                )
+            )
+            next_frame += 1
         print(
             f"precursor {completed:8d}/{samples} "
-            f"time {float(solution.time) - initial_time:8.3f}/{duration_seconds:.3f}s",
+            f"time {float(solution.time) - initial_time:8.3f}/"
+            f"{duration_seconds:.3f}s frames {len(frames)}/"
+            f"{len(frame_steps)}",
             flush=True,
         )
     recording_elapsed = time.perf_counter() - started
@@ -970,6 +1466,31 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
         json.dumps(metadata, indent=2) + "\n",
         encoding="utf-8",
     )
+    frame_path = (
+        workflow.options.output_directory / "precursor_flow_frames.npz"
+    )
+    if frames:
+        np.savez_compressed(
+            frame_path,
+            u_hub_yx=np.stack([frame["u_hub_yx"] for frame in frames]),
+            u_center_zx=np.stack(
+                [frame["u_center_zx"] for frame in frames]
+            ),
+            time_seconds=np.asarray(
+                [frame["time_seconds"] for frame in frames],
+                dtype=np.float64,
+            ),
+            step=np.asarray(
+                [frame["step"] for frame in frames], dtype=np.int64
+            ),
+            x_m=np.asarray(grid.x_centers, dtype=np.float64),
+            y_m=np.asarray(grid.y_centers, dtype=np.float64),
+            z_m=np.asarray(grid.z_centers, dtype=np.float64),
+            hub_height_m=np.asarray(frame_z),
+            center_y_m=np.asarray(frame_y),
+            start_time_seconds=np.asarray(initial_time),
+            dt_seconds=np.asarray(stage_dt),
+        )
     _save_solution(
         workflow.options.output_directory / "precursor_final.npz",
         solution,
@@ -988,6 +1509,11 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
         "maximum_dt_seconds": metadata["maximum_dt_seconds"],
         "cfl_ceiling": options.cfl_ceiling if adaptive else None,
         "configured_cfl_ceiling": options.cfl_ceiling,
+        "frames": {
+            "count": len(frames),
+            "path": str(frame_path) if frames else None,
+            "fields": ["u_hub_yx", "u_center_zx"],
+        },
     }
 
 def _load_inflow_block(directory: Path, start: int, stop: int, jnp):
@@ -1012,20 +1538,31 @@ def _main_frame_steps(steps: int, count: int) -> tuple[int, ...]:
 
 
 def _build_main_frame_capture(grid, *, y_m: float, z_m: float):
-    """Compile extraction of the two saved streamwise slices on the device."""
+    """Compile extraction of velocity and scalar streamwise slices."""
     import jax
+    import jax.numpy as jnp
 
-    z_index = np.clip(z_m / grid.dz - 0.5, 0.0, grid.nz - 1.0)
-    z_lower = int(np.floor(z_index))
-    z_upper = min(z_lower + 1, grid.nz - 1)
-    z_weight = z_index - z_lower
+    z_centers = np.asarray(grid.z_centers, dtype=np.float64)
+    z_upper = int(np.searchsorted(z_centers, z_m, side="right"))
+    z_upper = min(max(z_upper, 1), grid.nz - 1)
+    z_lower = z_upper - 1
+    if z_m <= z_centers[0]:
+        z_lower = z_upper = 0
+        z_weight = 0.0
+    elif z_m >= z_centers[-1]:
+        z_lower = z_upper = grid.nz - 1
+        z_weight = 0.0
+    else:
+        z_weight = (z_m - z_centers[z_lower]) / (
+            z_centers[z_upper] - z_centers[z_lower]
+        )
     y_index = y_m / grid.dy - 0.5
     y_floor = np.floor(y_index)
     y_lower = int(y_floor) % grid.ny
     y_upper = (y_lower + 1) % grid.ny
     y_weight = y_index - y_floor
 
-    def capture(x_faces):
+    def capture(x_faces, scalar_field):
         hub_faces = (
             (1.0 - z_weight) * x_faces[z_lower]
             + z_weight * x_faces[z_upper]
@@ -1034,9 +1571,25 @@ def _build_main_frame_capture(grid, *, y_m: float, z_m: float):
             (1.0 - y_weight) * x_faces[:, y_lower]
             + y_weight * x_faces[:, y_upper]
         )
+        scalar_hub = (
+            (1.0 - z_weight) * scalar_field[z_lower]
+            + z_weight * scalar_field[z_upper]
+        )
+        scalar_centre = (
+            (1.0 - y_weight) * scalar_field[:, y_lower]
+            + y_weight * scalar_field[:, y_upper]
+        )
+
+        def cell_centered(values):
+            if values.shape[-1] == grid.nx + 1:
+                return 0.5 * (values[..., :-1] + values[..., 1:])
+            return 0.5 * (values + jnp.roll(values, -1, axis=-1))
+
         return (
-            0.5 * (hub_faces[:, :-1] + hub_faces[:, 1:]),
-            0.5 * (centre_faces[:, :-1] + centre_faces[:, 1:]),
+            cell_centered(hub_faces),
+            cell_centered(centre_faces),
+            scalar_hub,
+            scalar_centre,
         )
 
     return jax.jit(capture)
@@ -1050,13 +1603,18 @@ def _capture_main_frame(
     z_m: float,
     capture=None,
 ) -> dict[str, Any]:
-    """Copy only the two saved streamwise slices from device to host."""
+    """Copy only the four saved streamwise slices from device to host."""
     if capture is None:
         capture = _build_main_frame_capture(grid, y_m=y_m, z_m=z_m)
-    hub, centre = capture(solution.velocity.x)
+    velocity_hub, velocity_centre, scalar_hub, scalar_centre = capture(
+        solution.velocity.x,
+        solution.scalar,
+    )
     return {
-        "u_hub_yx": np.asarray(hub),
-        "u_center_zx": np.asarray(centre),
+        "u_hub_yx": np.asarray(velocity_hub),
+        "u_center_zx": np.asarray(velocity_centre),
+        "scalar_hub_yx": np.asarray(scalar_hub),
+        "scalar_center_zx": np.asarray(scalar_centre),
         "time_seconds": float(solution.time),
         "step": int(solution.step),
     }
@@ -1078,7 +1636,10 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
 
     case = workflow.case.physical
     grid = case.physical_grid
-    recording = workflow.options.output_directory / "precursor_inflow"
+    input_directory = (
+        workflow.options.input_directory or workflow.options.output_directory
+    )
+    recording = input_directory / "precursor_inflow"
     metadata_path = recording / "metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"missing precursor recording: {metadata_path}")
@@ -1104,9 +1665,11 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         raise ValueError(
             "main_dt_seconds must match the fixed precursor recording cadence"
         )
+    substeps_per_inflow = workflow.options.main_substeps_per_inflow
+    integration_dt = stage_dt / substeps_per_inflow
 
     warm = _load_solution(
-        workflow.options.output_directory / "warmup_checkpoint.npz",
+        input_directory / "warmup_checkpoint.npz",
         jnp,
     )
     first = _load_inflow_block(recording, 0, 1, jnp)
@@ -1131,6 +1694,9 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
     gmg_config = {
         "presweeps": workflow.case.options.gmg_presweeps,
         "postsweeps": workflow.case.options.gmg_postsweeps,
+        "anisotropy_aware": (
+            workflow.case.options.gmg_anisotropy_aware
+        ),
         **(
             {}
             if workflow.case.options.gmg_tolerance is None
@@ -1144,6 +1710,63 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         dtype=case.pressure.dtype,
         config=gmg_config,
     )
+    turbine = workflow.turbine
+    scalar_source = None
+    if workflow.cooling is not None:
+        from jaxwind.fv import (
+            SubgridCooling,
+            SubgridSpray,
+            build_subgrid_cooling_source,
+            build_subgrid_spray_sources,
+        )
+
+        if turbine is None:
+            raise ValueError("finite-volume cooling requires a turbine")
+        cooling = workflow.cooling
+        source_center = (
+            turbine.x_m + cooling.streamwise_offset_m,
+            turbine.y_m,
+            turbine.hub_height_m,
+        )
+        if cooling.has_momentum_jet:
+            spray = SubgridSpray(
+                cooling_power_w=cooling.cooling_power_w,
+                mass_flow_rate_kg_s=cooling.mass_flow_rate_kg_s,
+                injection_speed_m_s=cooling.injection_speed_m_s,
+                air_density_kg_m3=cooling.air_density_kg_m3,
+                air_heat_capacity_j_kg_k=cooling.air_heat_capacity_j_kg_k,
+                nozzle_m=source_center,
+                nozzle_diameter_m=cooling.nozzle_diameter_m,
+                cone_half_angle_degrees=cooling.cone_half_angle_degrees,
+                axial_standard_deviation_m=(
+                    cooling.standard_deviation_m[0]
+                ),
+                minimum_radial_standard_deviation_m=(
+                    cooling.standard_deviation_m[1],
+                    cooling.standard_deviation_m[2],
+                ),
+                ramp_time_s=cooling.ramp_time_s,
+            )
+            scalar_source, spray_forcing = build_subgrid_spray_sources(
+                grid, spray, dtype=case.pressure.dtype
+            )
+            momentum = replace(
+                momentum,
+                forcing=_combine_forcings(momentum.forcing, spray_forcing),
+            )
+        else:
+            scalar_source = build_subgrid_cooling_source(
+                grid,
+                SubgridCooling(
+                    cooling_power_w=cooling.cooling_power_w,
+                    air_density_kg_m3=cooling.air_density_kg_m3,
+                    air_heat_capacity_j_kg_k=cooling.air_heat_capacity_j_kg_k,
+                    center_m=source_center,
+                    standard_deviation_m=cooling.standard_deviation_m,
+                    ramp_time_s=cooling.ramp_time_s,
+                ),
+                dtype=case.pressure.dtype,
+            )
     step = build_open_atmospheric_step(
         grid,
         boundaries,
@@ -1152,6 +1775,7 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         scalar,
         buoyancy,
         surface,
+        scalar_source=scalar_source,
         scheme=workflow.case.options.time_integration,
     )
     advance = build_open_atmospheric_run(step)
@@ -1181,7 +1805,14 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         if next_frame < len(frame_steps):
             stop = min(stop, frame_steps[next_frame])
         inflows = _load_inflow_block(recording, completed, stop, jnp)
-        solution = advance(solution, stage_dt, inflows)
+        if substeps_per_inflow > 1:
+            inflows = type(inflows)(
+                *(
+                    jnp.repeat(component, substeps_per_inflow, axis=0)
+                    for component in inflows
+                )
+            )
+        solution = advance(solution, integration_dt, inflows)
         jax.block_until_ready(solution.velocity.x)
         completed = stop
         if next_frame < len(frame_steps) and completed == frame_steps[next_frame]:
@@ -1199,7 +1830,7 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
             jnp.max(jnp.abs(divergence(solution.velocity, grid)))
         )
         block_elapsed.append(time.perf_counter() - block_started)
-        block_steps.append(stop - block_start)
+        block_steps.append((stop - block_start) * substeps_per_inflow)
         print(
             f"main {completed:8d}/{steps} div {maximum_divergence:.3e} "
             f"rate {block_steps[-1] / block_elapsed[-1]:.1f} step/s "
@@ -1214,16 +1845,24 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
             frame_path,
             u_hub_yx=np.stack([frame["u_hub_yx"] for frame in frames]),
             u_center_zx=np.stack([frame["u_center_zx"] for frame in frames]),
+            scalar_hub_yx=np.stack(
+                [frame["scalar_hub_yx"] for frame in frames]
+            ),
+            scalar_center_zx=np.stack(
+                [frame["scalar_center_zx"] for frame in frames]
+            ),
             time_seconds=np.asarray(
                 [frame["time_seconds"] for frame in frames], dtype=np.float64
             ),
             step=np.asarray([frame["step"] for frame in frames], dtype=np.int64),
             x_m=(np.arange(grid.nx) + 0.5) * grid.dx,
             y_m=(np.arange(grid.ny) + 0.5) * grid.dy,
-            z_m=(np.arange(grid.nz) + 0.5) * grid.dz,
+            z_m=np.asarray(grid.z_centers, dtype=np.float64),
             hub_height_m=np.asarray(frame_z),
             center_y_m=np.asarray(frame_y),
-            dt_seconds=np.asarray(stage_dt),
+            dt_seconds=np.asarray(integration_dt),
+            inflow_dt_seconds=np.asarray(stage_dt),
+            substeps_per_inflow=np.asarray(substeps_per_inflow),
         )
 
     startup_blocks = min(2, len(block_elapsed))
@@ -1240,9 +1879,12 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         jnp.max(jnp.abs(divergence(solution.velocity, grid)))
     )
     return {
-        "steps": steps,
+        "steps": steps * substeps_per_inflow,
+        "inflow_samples": steps,
         "duration_seconds": steps * stage_dt,
-        "dt_seconds": stage_dt,
+        "dt_seconds": integration_dt,
+        "inflow_dt_seconds": stage_dt,
+        "substeps_per_inflow": substeps_per_inflow,
         "time_integration": workflow.case.options.time_integration,
         "elapsed_seconds": elapsed,
         "compile_and_first_block_seconds": block_elapsed[0],
@@ -1262,7 +1904,12 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         "frames": {
             "count": len(frames),
             "path": str(frame_path) if frames else None,
-            "fields": ["u_hub_yx", "u_center_zx"],
+            "fields": [
+                "u_hub_yx",
+                "u_center_zx",
+                "scalar_hub_yx",
+                "scalar_center_zx",
+            ],
         },
     }
 

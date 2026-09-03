@@ -35,9 +35,9 @@ def load_initial_profile(case: BoussinesqCase) -> np.ndarray:
     if table.shape != (case.physical_grid.nz,):
         raise ValueError("initial profile must contain one row per vertical cell")
     z = np.asarray(table["z_m"], dtype=np.float64)
-    expected_z = (
-        np.arange(case.physical_grid.nz, dtype=np.float64) + 0.5
-    ) * case.physical_grid.dz
+    expected_z = np.asarray(
+        case.physical_grid.z_centers, dtype=np.float64
+    )
     if not np.allclose(z, expected_z, rtol=0.0, atol=1.0e-12):
         raise ValueError("initial profile heights must match the case grid")
     if not all(np.all(np.isfinite(table[name])) for name in REQUIRED_COLUMNS):
@@ -75,7 +75,7 @@ def build_initial_fields(
     table = load_initial_profile(case)
     grid = case.physical_grid
     dtype = getattr(jnp, case.pressure.dtype)
-    z = (jnp.arange(grid.nz, dtype=dtype) + 0.5) * grid.dz
+    z = jnp.asarray(grid.z_centers, dtype=dtype)
     table_z = jnp.asarray(table["z_m"], dtype=dtype)
 
     def cell_profile(name: str):

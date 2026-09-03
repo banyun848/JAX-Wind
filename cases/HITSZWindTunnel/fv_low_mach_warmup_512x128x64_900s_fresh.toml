@@ -1,0 +1,29 @@
+[case]
+name = "hitsz_periodic_low_mach_fresh_warmup_512x128x64_900s"
+
+[restart]
+source_workflow = "fv_uniform_512x128x64_l24_low_mach_fresh_warmup.toml"
+initial_condition = "configured"
+
+[time]
+dt_seconds = 0.005
+steps = 180000
+chunk_steps = 600
+frame_count = 300
+statistics_window_seconds = 60.0
+
+[thermodynamics]
+temperature_k = 300.0
+pressure_pa = 101325.0
+water_vapor_mixing_ratio = 0.017996758222579956
+air_gas_constant_j_kg_k = 287.05
+nitrogen_gas_constant_j_kg_k = 296.8
+water_vapor_gas_constant_j_kg_k = 461.5
+gravity_m_s2 = [0.0, 0.0, -9.81]
+
+[numerics]
+pressure_backend = "fft"
+time_integration = "fast-rk3"
+
+[output]
+directory = "outputs/hitsz_low_mach_fresh_warmup/fv_512x128x64_900s"

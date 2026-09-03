@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 from .operators import cell_velocity
 from .state import StaggeredVelocity
@@ -78,13 +78,13 @@ def coupled_surface_exchange(
     velocity: StaggeredVelocity,
     scalar: jnp.ndarray,
     time: jnp.ndarray,
-    grid: UniformGrid,
+    grid: Grid,
     model: MoninObukhovSurface,
 ) -> SurfaceExchange:
     """Evaluate stability-dependent plane-mean lower-boundary exchange."""
 
     u, v, _w = cell_velocity(velocity)
-    measurement_height = 0.5 * grid.dz
+    measurement_height = 0.5 * float(grid.z_widths[0])
     mean_u = jnp.mean(u[0]) + model.x_velocity_offset
     mean_v = jnp.mean(v[0]) + model.y_velocity_offset
     mean_scalar = jnp.mean(scalar[0])
@@ -242,12 +242,16 @@ def coupled_surface_exchange(
 def surface_momentum_tendency(
     velocity: StaggeredVelocity,
     exchange: SurfaceExchange,
-    grid: UniformGrid,
+    grid: Grid,
 ) -> StaggeredVelocity:
     """Apply plane-mean coupled stress to the first momentum cells."""
 
-    x = jnp.zeros_like(velocity.x).at[0].set(-exchange.stress_x / grid.dz)
-    y = jnp.zeros_like(velocity.y).at[0].set(-exchange.stress_y / grid.dz)
+    x = jnp.zeros_like(velocity.x).at[0].set(
+        -exchange.stress_x / float(grid.z_widths[0])
+    )
+    y = jnp.zeros_like(velocity.y).at[0].set(
+        -exchange.stress_y / float(grid.z_widths[0])
+    )
     return StaggeredVelocity(x, y, jnp.zeros_like(velocity.z))
 
 

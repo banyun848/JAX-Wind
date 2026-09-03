@@ -64,8 +64,20 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         "momentum_closure": "AnisotropicMinimumDissipation",
         "scalar_closure": "eddy diffusivity",
         "turbulent_prandtl": options.turbulent_prandtl,
+        "scalar_advection_scheme": options.scalar_advection_scheme,
         "cells": [grid.nx, grid.ny, grid.nz],
         "lengths_m": [grid.lx, grid.ly, grid.lz],
+        "grid_uniform": grid.is_uniform,
+        "minimum_cell_widths_m": [
+            float(np.min(grid.x_widths)),
+            float(np.min(grid.y_widths)),
+            float(np.min(grid.z_widths)),
+        ],
+        "maximum_cell_widths_m": [
+            float(np.max(grid.x_widths)),
+            float(np.max(grid.y_widths)),
+            float(np.max(grid.z_widths)),
+        ],
         "dt_seconds": case.dt_seconds,
         "dt_interpretation": (
             "maximum" if options.cfl_ceiling is not None else "fixed"
@@ -79,6 +91,7 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         "gmg_tolerance": options.gmg_tolerance,
         "gmg_presweeps": options.gmg_presweeps,
         "gmg_postsweeps": options.gmg_postsweeps,
+        "gmg_anisotropy_aware": options.gmg_anisotropy_aware,
         "roughness_length_m": scales.from_execution_length(
             momentum.wall.roughness_length
         ),
@@ -217,7 +230,7 @@ def evaluate(
     import jax.numpy as jnp
     from jaxwind.fv import (
         AnisotropicMinimumDissipation,
-        CELL_CENTRE,
+        CELL_AVERAGE,
         LOCAL,
         CoriolisGeostrophic,
         FlowModel,
@@ -248,6 +261,7 @@ def evaluate(
         {
             "presweeps": options.gmg_presweeps,
             "postsweeps": options.gmg_postsweeps,
+            "anisotropy_aware": options.gmg_anisotropy_aware,
             **(
                 {}
                 if options.gmg_tolerance is None
@@ -286,7 +300,7 @@ def evaluate(
         wall = MoninObukhovWall(
             configuration["roughness_length_m"],
             von_karman=case.model.momentum.wall.von_karman,
-            sampling=CELL_CENTRE,
+            sampling=CELL_AVERAGE,
             averaging=LOCAL,
         )
     momentum = FlowModel(
@@ -423,7 +437,7 @@ def evaluate(
         )
     profile_diagnostic = jax.jit(diagnostic)
 
-    z = (np.arange(grid.nz, dtype=np.float64) + 0.5) * grid.dz
+    z = np.asarray(grid.z_centers, dtype=np.float64)
     spectrum_level = int(
         np.argmin(
             np.abs(z - case.diagnostic_reference.spectrum_heights_m[0])

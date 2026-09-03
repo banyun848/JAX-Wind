@@ -234,6 +234,24 @@ class RigidBladeElementDisk:
     def rotor_diameter_m(self) -> float:
         return 2.0 * self.rotor.tip_radius_m
 
+    def to_actuator_line(
+        self,
+        *,
+        scales: ScaleSystem,
+        initial_azimuth_degrees: float | None = None,
+    ) -> BladeElementActuatorLine:
+        """Lower the positioned OpenFAST rotor to rotating blade lines."""
+        return self.rotor.to_actuator_line(
+            scales=scales,
+            x_m=self.x_m,
+            y_m=self.y_m,
+            smoothing_width_m=self.smoothing_width_m,
+            hub_height_m=self.hub_height_m,
+            rotor_speed_rpm=self.rotor_speed_rpm,
+            pitch_degrees=self.pitch_degrees,
+            initial_azimuth_degrees=initial_azimuth_degrees,
+        )
+
     def to_actuator_disk(self, *, scales: ScaleSystem) -> BladeElementActuatorDisk:
         disk = self.rotor.to_actuator_disk_bem(
             scales=scales,

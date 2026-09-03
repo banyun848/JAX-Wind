@@ -9,9 +9,13 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from jaxwind.domain import UniformGrid
+from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
 from jaxwind.fv import (
+    FREE_SLIP,
+    OPEN,
+    Boundaries,
     StaggeredVelocity,
+    Wall,
     assemble_pressure_matrix,
     build_pressure_poisson,
     default_tolerance,
@@ -45,18 +49,62 @@ class PressureMatrixTest(unittest.TestCase):
     grid = UniformGrid(8, 6, 4, 2.0, 1.5, 1.0)
 
     def test_unpinned_matrix_is_the_divergence_of_the_gradient(self) -> None:
-        """The assembled operator must be the projection's own composition."""
-        matrix = assemble_pressure_matrix(self.grid, reference_cell=None)
+        """Assembly must match the projection on uniform and mapped meshes."""
+        grids = (
+            self.grid,
+            AnalyticalGrid(
+                8,
+                6,
+                4,
+                2.0,
+                1.5,
+                1.0,
+                TanhMapping(1.4, focus=0.0),
+                TanhMapping(1.1),
+                TanhMapping(0.8),
+            ),
+        )
+        for grid in grids:
+            with self.subTest(mapped=not grid.is_uniform):
+                matrix = assemble_pressure_matrix(grid, reference_cell=None)
+                pressure = jax.random.normal(
+                    jax.random.PRNGKey(3),
+                    (grid.nz, grid.ny, grid.nx),
+                )
+                laplacian = divergence(
+                    pressure_gradient(pressure, grid), grid
+                )
+                expected = -laplacian
+                if not grid.is_uniform:
+                    expected = expected * jnp.asarray(grid.cell_volumes)
+                applied = matrix_vector_product(
+                    matrix, pressure.reshape(-1)
+                )
+                self.assertLess(
+                    float(
+                        jnp.max(
+                            jnp.abs(applied.reshape(expected.shape) - expected)
+                        )
+                    ),
+                    1.0e-11,
+                )
+
+    def test_wall_y_matrix_matches_the_constrained_gradient(self) -> None:
+        matrix = assemble_pressure_matrix(
+            self.grid, periodic_x=False, periodic_y=False, reference_cell=None
+        )
         pressure = jax.random.normal(
-            jax.random.PRNGKey(3),
+            jax.random.PRNGKey(31),
             (self.grid.nz, self.grid.ny, self.grid.nx),
         )
-        laplacian = divergence(pressure_gradient(pressure, self.grid), self.grid)
-        applied = matrix_vector_product(matrix, pressure.reshape(-1))
-        self.assertLess(
-            float(jnp.max(jnp.abs(applied.reshape(laplacian.shape) + laplacian))),
-            1.0e-11,
+        gradient = pressure_gradient(
+            pressure, self.grid, periodic_x=False, periodic_y=False
         )
+        self.assertEqual(gradient.y.shape, (self.grid.nz, self.grid.ny + 1, self.grid.nx))
+        self.assertEqual(float(jnp.max(jnp.abs(gradient.y[:, (0, -1)]))), 0.0)
+        expected = -divergence(gradient, self.grid)
+        applied = matrix_vector_product(matrix, pressure.reshape(-1)).reshape(expected.shape)
+        self.assertLess(float(jnp.max(jnp.abs(applied - expected))), 1.0e-11)
 
     def test_matrix_is_symmetric_and_positive_definite_once_pinned(self) -> None:
         unpinned = dense_matrix(assemble_pressure_matrix(self.grid, reference_cell=None))
@@ -115,6 +163,70 @@ class PoissonSolveTest(unittest.TestCase):
         residual = float(poisson.residual_norm(pressure, right_hand_side))
         self.assertLess(residual, 1.0e-9 * scale)
 
+    def test_mapped_vertical_solution_reproduces_a_manufactured_rhs(self) -> None:
+        grid = AnalyticalGrid(
+            16,
+            12,
+            8,
+            2.0,
+            1.5,
+            1.0,
+            TanhMapping(0.0),
+            TanhMapping(0.0),
+            TanhMapping(1.4, focus=0.0),
+        )
+        poisson = build_pressure_poisson(grid, backend="fft")
+        x, y, z = (jnp.asarray(axis) for axis in _cell_axes(grid))
+        exact = (
+            jnp.cos(2.0 * jnp.pi * x[None, None, :] / grid.lx)
+            * jnp.sin(2.0 * jnp.pi * y[None, :, None] / grid.ly)
+            * jnp.cos(jnp.pi * z[:, None, None] / grid.lz)
+        )
+        right_hand_side = divergence(pressure_gradient(exact, grid), grid)
+        solved = poisson.solve(right_hand_side)
+        self.assertLess(
+            float(jnp.max(jnp.abs(solved - (exact - jnp.mean(exact))))),
+            1.0e-8,
+        )
+        residual = float(poisson.residual_norm(solved, right_hand_side))
+        self.assertLess(
+            residual,
+            1.0e-9 * float(jnp.linalg.norm(right_hand_side)),
+        )
+
+    def test_fft_rejects_horizontal_but_not_vertical_stretching(self) -> None:
+        mappings = (
+            (
+                TanhMapping(1.2, focus=0.0),
+                TanhMapping(0.0),
+                TanhMapping(0.0),
+            ),
+            (
+                TanhMapping(0.0),
+                TanhMapping(1.2, focus=0.0),
+                TanhMapping(0.0),
+            ),
+        )
+        for mapping in mappings:
+            grid = AnalyticalGrid(8, 8, 8, 1.0, 1.0, 1.0, *mapping)
+            with self.subTest(mapping=mapping), self.assertRaisesRegex(
+                ValueError, "uniform x and y"
+            ):
+                build_pressure_poisson(grid, backend="fft")
+
+        vertical = AnalyticalGrid(
+            8,
+            8,
+            8,
+            1.0,
+            1.0,
+            1.0,
+            TanhMapping(0.0),
+            TanhMapping(0.0),
+            TanhMapping(1.2, focus=0.0),
+        )
+        build_pressure_poisson(vertical, backend="fft")
+
     def test_rejects_removed_and_unknown_backends(self) -> None:
         grid = UniformGrid(4, 4, 4, 1.0, 1.0, 1.0)
         for backend in ("cg", "multigrid"):
@@ -148,6 +260,35 @@ class SinglePrecisionTest(unittest.TestCase):
         scale = float(jnp.linalg.norm(right_hand_side))
         residual = float(poisson.residual_norm(pressure, right_hand_side))
         self.assertLess(residual, 1.0e-5 * scale)
+
+    def test_mapped_fft_keeps_single_precision_and_projection_accuracy(self) -> None:
+        grid = AnalyticalGrid(
+            8,
+            8,
+            8,
+            1.0,
+            1.0,
+            1.0,
+            TanhMapping(0.0),
+            TanhMapping(0.0),
+            TanhMapping(1.2, focus=0.0),
+        )
+        velocity = random_velocity(grid, 23)
+        single = StaggeredVelocity(
+            velocity.x.astype(jnp.float32),
+            velocity.y.astype(jnp.float32),
+            velocity.z.astype(jnp.float32),
+        )
+        poisson = build_pressure_poisson(
+            grid, backend="fft", dtype="float32"
+        )
+        right_hand_side = divergence(single, grid)
+        pressure = poisson.solve(right_hand_side)
+        self.assertEqual(pressure.dtype, jnp.dtype("float32"))
+        before = float(jnp.max(jnp.abs(right_hand_side)))
+        projected, _ = project(single, poisson, 0.05)
+        after = float(jnp.max(jnp.abs(divergence(projected, grid))))
+        self.assertLess(after, 1.0e-5 * before)
 
     def test_the_projection_reaches_single_precision_round_off(self) -> None:
         poisson = build_pressure_poisson(self.grid, backend="gmg", dtype="float32")
@@ -191,13 +332,32 @@ class ProjectionTest(unittest.TestCase):
         )
         self.assertLess(float(jnp.max(jnp.abs(pressure))), 1.0e-9)
 
+    def test_mapped_vertical_projection_removes_divergence(self) -> None:
+        grid = AnalyticalGrid(
+            12,
+            10,
+            8,
+            1.5,
+            1.25,
+            1.0,
+            TanhMapping(0.0),
+            TanhMapping(0.0),
+            TanhMapping(1.3, focus=0.0),
+        )
+        velocity = random_velocity(grid, 29)
+        before = float(jnp.max(jnp.abs(divergence(velocity, grid))))
+        projected, _ = project(
+            velocity,
+            build_pressure_poisson(grid, backend="fft"),
+            0.05,
+        )
+        after = float(jnp.max(jnp.abs(divergence(projected, grid))))
+        self.assertGreater(before, 1.0)
+        self.assertLess(after, 1.0e-9 * before)
 
-def _cell_axes(grid: UniformGrid):
-    return (
-        (np.arange(grid.nx) + 0.5) * grid.dx,
-        (np.arange(grid.ny) + 0.5) * grid.dy,
-        (np.arange(grid.nz) + 0.5) * grid.dz,
-    )
+
+def _cell_axes(grid: UniformGrid | AnalyticalGrid):
+    return grid.x_centers, grid.y_centers, grid.z_centers
 
 
 if __name__ == "__main__":

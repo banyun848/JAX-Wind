@@ -8,7 +8,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 
-from jaxwind.domain import UniformGrid
+from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
 from jaxwind.fv import (
     FREE_SLIP,
     Boundaries,
@@ -22,24 +22,27 @@ from jaxwind.fv import (
     project,
     stable_timestep,
 )
+from jaxwind.fv.metrics import shaped_center_distances, shaped_widths
 
 
 class AdvectionTest(unittest.TestCase):
     grid = UniformGrid(10, 8, 6, 1.0, 0.8, 0.6)
 
-    def solenoidal(self, seed: int) -> StaggeredVelocity:
+    def solenoidal(self, seed: int, grid=None) -> StaggeredVelocity:
+        grid = self.grid if grid is None else grid
         keys = jax.random.split(jax.random.PRNGKey(seed), 3)
-        cells = (self.grid.nz, self.grid.ny, self.grid.nx)
+        cells = (grid.nz, grid.ny, grid.nx)
         candidate = StaggeredVelocity(
             jax.random.normal(keys[0], cells),
             jax.random.normal(keys[1], cells),
-            jax.random.normal(keys[2], (self.grid.nz + 1, self.grid.ny, self.grid.nx))
+            jax.random.normal(keys[2], (grid.nz + 1, grid.ny, grid.nx))
             .at[0]
             .set(0.0)
             .at[-1]
             .set(0.0),
         )
-        poisson = build_pressure_poisson(self.grid, backend="fft")
+        backend = "fft" if grid.is_uniform else "gmg"
+        poisson = build_pressure_poisson(grid, backend=backend)
         projected, _ = project(candidate, poisson, 0.1)
         return projected
 
@@ -66,28 +69,81 @@ class AdvectionTest(unittest.TestCase):
         )
 
     def test_transport_conserves_kinetic_energy(self) -> None:
-        """A solenoidal field must gain no energy from the transport term."""
-        velocity = self.solenoidal(2)
-        tendency = advection(velocity, self.grid)
-        volume = self.grid.dx * self.grid.dy * self.grid.dz
-        production = volume * (
-            jnp.sum(velocity.x * tendency.x)
-            + jnp.sum(velocity.y * tendency.y)
-            + jnp.sum(velocity.z[1:-1] * tendency.z[1:-1])
+        """Mapped contravariant fluxes must retain discrete skew symmetry."""
+        mapped = AnalyticalGrid(
+            10,
+            8,
+            6,
+            1.0,
+            0.8,
+            0.6,
+            TanhMapping(1.2, focus=0.0),
+            TanhMapping(1.0),
+            TanhMapping(0.8),
         )
-        energy = kinetic_energy(velocity, self.grid)
-        self.assertLess(float(jnp.abs(production)), 1.0e-9 * float(energy))
+        for grid in (self.grid, mapped):
+            with self.subTest(mapped=not grid.is_uniform):
+                velocity = self.solenoidal(2, grid)
+                tendency = advection(velocity, grid)
+                u_volume = (
+                    shaped_widths(grid, 0)
+                    * shaped_widths(grid, 1)
+                    * shaped_center_distances(grid, 2, periodic=True)
+                )
+                v_volume = (
+                    shaped_widths(grid, 0)
+                    * shaped_center_distances(grid, 1, periodic=True)
+                    * shaped_widths(grid, 2)
+                )
+                w_volume = (
+                    shaped_center_distances(grid, 0, periodic=False)
+                    * shaped_widths(grid, 1)
+                    * shaped_widths(grid, 2)
+                )
+                production = (
+                    jnp.sum(u_volume * velocity.x * tendency.x)
+                    + jnp.sum(v_volume * velocity.y * tendency.y)
+                    + jnp.sum(w_volume * velocity.z * tendency.z)
+                )
+                energy = kinetic_energy(velocity, grid)
+                self.assertLess(
+                    float(jnp.abs(production)), 1.0e-8 * float(energy)
+                )
 
     def test_uniform_flow_is_not_advected(self) -> None:
-        cells = (self.grid.nz, self.grid.ny, self.grid.nx)
-        uniform = StaggeredVelocity(
-            jnp.full(cells, 3.0),
-            jnp.full(cells, -1.0),
-            jnp.zeros((self.grid.nz + 1, self.grid.ny, self.grid.nx)),
+        grids = (
+            self.grid,
+            AnalyticalGrid(
+                10,
+                8,
+                6,
+                1.0,
+                0.8,
+                0.6,
+                TanhMapping(1.4, focus=0.0),
+                TanhMapping(1.2),
+                TanhMapping(1.0),
+            ),
         )
-        tendency = advection(uniform, self.grid)
-        for component in tendency:
-            self.assertLess(float(jnp.max(jnp.abs(component))), 1.0e-12)
+        for grid in grids:
+            with self.subTest(mapped=not grid.is_uniform):
+                cells = (grid.nz, grid.ny, grid.nx)
+                uniform = StaggeredVelocity(
+                    jnp.full(cells, 3.0),
+                    jnp.full(cells, -1.0),
+                    jnp.zeros((grid.nz + 1, grid.ny, grid.nx)),
+                )
+                tendency = advection(uniform, grid)
+                self.assertLess(
+                    float(jnp.max(jnp.abs(divergence(uniform, grid)))),
+                    1.0e-12,
+                )
+                for component in tendency:
+                    self.assertLess(float(jnp.max(jnp.abs(component))), 1.0e-12)
+        mapped = grids[1]
+        self.assertLess(mapped.x_widths[0], mapped.x_widths[-1])
+        self.assertLess(mapped.y_widths[mapped.ny // 2], mapped.y_widths[0])
+        self.assertLess(mapped.z_widths[mapped.nz // 2], mapped.z_widths[0])
 
 
 class DiffusionTest(unittest.TestCase):

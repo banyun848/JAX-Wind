@@ -11,7 +11,15 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib
 
-from jaxwind.domain import ScaleSystem, UniformGrid
+from jaxwind.domain import (
+    AnalyticalGrid,
+    IdentityMapping,
+    ScaleSystem,
+    SinhMapping,
+    TanhMapping,
+    UniformGrid,
+)
+from jaxwind.domain.grid import Grid
 from jaxwind.integrators import AB2Config
 from jaxwind.physics import (
     BoussinesqModel,
@@ -115,6 +123,71 @@ def _integers(
     return tuple(_integer(temporary, str(index)) for index in range(length))
 
 
+def _physical_grid(
+    domain: dict[str, Any],
+    cells: tuple[int, int, int],
+    lengths_m: tuple[float, float, float],
+) -> Grid:
+    """Build the physical grid from an optional analytical mapping table."""
+
+    table = domain.get("mapping")
+    if table is None:
+        return UniformGrid(*cells, *lengths_m)
+    if not isinstance(table, dict):
+        raise ValueError("domain.mapping must be a table")
+    _keys(
+        table,
+        {"types", "focus_m", "strength"},
+        name="domain.mapping",
+    )
+    raw_types = table["types"]
+    if (
+        not isinstance(raw_types, list)
+        or len(raw_types) != 3
+        or any(
+            not isinstance(value, str) or not value for value in raw_types
+        )
+    ):
+        raise ValueError("domain.mapping.types must contain 3 strings")
+    mapping_types = tuple(
+        value.lower().replace("_", "-") for value in raw_types
+    )
+    focus_m = _numbers(table, "focus_m", length=3)
+    strengths = _numbers(table, "strength", length=3)
+    mappings = []
+    nonuniform = False
+    for axis, kind, focus, strength, length in zip(
+        "xyz", mapping_types, focus_m, strengths, lengths_m, strict=True
+    ):
+        if kind not in {"uniform", "tanh", "sinh"}:
+            raise ValueError(
+                f"domain.mapping.types[{axis}] must be uniform, tanh, or sinh"
+            )
+        if not 0.0 <= focus <= length:
+            raise ValueError(
+                f"domain.mapping.focus_m[{axis}] must lie in [0, {length}]"
+            )
+        if strength < 0.0:
+            raise ValueError(
+                f"domain.mapping.strength[{axis}] must be nonnegative"
+            )
+        if kind == "uniform":
+            if strength != 0.0:
+                raise ValueError(
+                    f"domain.mapping.strength[{axis}] must be zero for uniform"
+                )
+            mappings.append(IdentityMapping())
+        elif kind == "tanh":
+            mappings.append(TanhMapping(strength, focus / length))
+            nonuniform = nonuniform or strength > 0.0
+        else:
+            mappings.append(SinhMapping(focus / length, strength))
+            nonuniform = nonuniform or strength > 0.0
+    if not nonuniform:
+        return UniformGrid(*cells, *lengths_m)
+    return AnalyticalGrid(*cells, *lengths_m, *mappings)
+
+
 def compose_abl(
     *,
     name: str,
@@ -163,10 +236,23 @@ def compose_abl(
     cfl_warning: float,
     cfl_abort: float,
     trajectory_cfl_abort: float,
+    physical_grid: Grid | None = None,
 ) -> BoussinesqCase:
     """Lower one set of physical inputs without classifying the flow regime."""
 
-    grid = UniformGrid(*cells, *lengths_m)
+    grid = (
+        UniformGrid(*cells, *lengths_m)
+        if physical_grid is None
+        else physical_grid
+    )
+    if (grid.nx, grid.ny, grid.nz) != cells or (
+        grid.lx,
+        grid.ly,
+        grid.lz,
+    ) != lengths_m:
+        raise ValueError(
+            "physical_grid must match the composed cells and lengths"
+        )
     mechanical_scales = ScaleSystem(length_scale_m, velocity_scale_m_s)
     scalar_scales = ScalarScaleSystem(
         mechanical_scales,
@@ -314,6 +400,7 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         "finite_volume",
         "finite_volume_turbine",
         "finite_volume_workflow",
+        "finite_volume_cooling",
         "surface_scalar",
     }
     if not expected_tables <= document.keys() or not document.keys() <= (
@@ -348,7 +435,12 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         {"name", "citation", "initial_profile", "reference_results", "seed"},
         name="case",
     )
-    _keys(domain, {"cells", "lengths_m"}, name="domain")
+    _keys(
+        domain,
+        {"cells", "lengths_m"},
+        name="domain",
+        optional={"mapping"},
+    )
     _keys(scales, {"length_m", "velocity_m_s", "scalar"}, name="scales")
     _keys(
         flow,
@@ -428,6 +520,11 @@ def load_abl(path: str | Path) -> BoussinesqCase:
 
     cells = _integers(domain, "cells", length=3)
     lengths = _numbers(domain, "lengths_m", length=3)
+    physical_grid = _physical_grid(
+        domain,
+        (cells[0], cells[1], cells[2]),
+        (lengths[0], lengths[1], lengths[2]),
+    )
     pressure_acceleration = _numbers(
         flow, "pressure_acceleration_m_s2", length=2
     )
@@ -521,6 +618,7 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         cfl_warning=_number(numerics, "cfl_warning"),
         cfl_abort=_number(numerics, "cfl_abort"),
         trajectory_cfl_abort=_number(numerics, "trajectory_cfl_abort"),
+        physical_grid=physical_grid,
     )
 
 

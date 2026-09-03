@@ -35,8 +35,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import AnalyticalGrid, Grid, UniformGrid
 
+from .metrics import cell_volumes
 from .operators import divergence, pressure_gradient
 from .state import StaggeredVelocity
 
@@ -122,11 +123,125 @@ def _coalesce_to_csr(
     return values, columns.astype(np.int32), indptr
 
 
+def _assemble_mapped_pressure_matrix(
+    grid: Grid,
+    *,
+    dtype: str,
+    periodic_x: bool,
+    periodic_y: bool,
+    reference_cell: int | None,
+) -> SparseMatrix:
+    """Assemble the symmetric, volume-integrated mapped pressure operator."""
+    resolved = np.dtype(dtype)
+    nx, ny, nz = grid.nx, grid.ny, grid.nz
+    plane = ny * nx
+    k, j, i = (
+        index.ravel()
+        for index in np.meshgrid(
+            np.arange(nz), np.arange(ny), np.arange(nx), indexing="ij"
+        )
+    )
+    rows = (k * plane + j * nx + i).astype(np.int64)
+    hx, hy, hz = grid.x_widths, grid.y_widths, grid.z_widths
+    dx_periodic = 0.5 * (hx + np.roll(hx, 1))
+    dy_periodic = 0.5 * (hy + np.roll(hy, 1))
+    dx_faces = np.concatenate(
+        ((0.5 * hx[0],), 0.5 * (hx[:-1] + hx[1:]), (0.5 * hx[-1],))
+    )
+    dy_faces = np.concatenate(
+        ((0.5 * hy[0],), 0.5 * (hy[:-1] + hy[1:]), (0.5 * hy[-1],))
+    )
+    dz_faces = np.concatenate(
+        ((0.5 * hz[0],), 0.5 * (hz[:-1] + hz[1:]), (0.5 * hz[-1],))
+    )
+    diagonal = np.zeros(rows.size, dtype=np.float64)
+    row_blocks: list[np.ndarray] = []
+    column_blocks: list[np.ndarray] = []
+    value_blocks: list[np.ndarray] = []
+
+    def connect(
+        mask: np.ndarray, neighbor: np.ndarray, conductance: np.ndarray
+    ) -> None:
+        diagonal[mask] += conductance[mask]
+        row_blocks.append(rows[mask])
+        column_blocks.append(neighbor[mask].astype(np.int64))
+        value_blocks.append(-conductance[mask])
+
+    area_x = hz[k] * hy[j]
+    if periodic_x:
+        left_x = area_x / dx_periodic[i]
+        right_x = area_x / dx_periodic[(i + 1) % nx]
+        all_cells = np.ones(rows.size, dtype=bool)
+        connect(all_cells, k * plane + j * nx + (i - 1) % nx, left_x)
+        connect(all_cells, k * plane + j * nx + (i + 1) % nx, right_x)
+        transverse = all_cells
+    else:
+        lower = i > 0
+        upper = i < nx - 1
+        left_x = area_x / dx_faces[i]
+        right_x = area_x / dx_faces[i + 1]
+        connect(lower, rows - 1, left_x)
+        connect(upper, rows + 1, right_x)
+        outlet = i == nx - 1
+        diagonal[outlet] += area_x[outlet] / dx_faces[-1]
+        transverse = (i > 0) & (i < nx - 1)
+
+    area_y = hz[k] * hx[i]
+    if periodic_y:
+        lower_y = area_y / dy_periodic[j]
+        upper_y = area_y / dy_periodic[(j + 1) % ny]
+        connect(
+            transverse,
+            k * plane + ((j - 1) % ny) * nx + i,
+            lower_y,
+        )
+        connect(
+            transverse,
+            k * plane + ((j + 1) % ny) * nx + i,
+            upper_y,
+        )
+    else:
+        lower = transverse & (j > 0)
+        upper = transverse & (j < ny - 1)
+        lower_y = area_y / dy_faces[j]
+        upper_y = area_y / dy_faces[j + 1]
+        connect(lower, rows - nx, lower_y)
+        connect(upper, rows + nx, upper_y)
+
+    area_z = hy[j] * hx[i]
+    lower = transverse & (k > 0)
+    upper = transverse & (k < nz - 1)
+    lower_z = area_z / dz_faces[k]
+    upper_z = area_z / dz_faces[k + 1]
+    connect(lower, rows - plane, lower_z)
+    connect(upper, rows + plane, upper_z)
+
+    row_blocks.insert(0, rows)
+    column_blocks.insert(0, rows)
+    value_blocks.insert(0, diagonal)
+    all_rows = np.concatenate(row_blocks)
+    all_columns = np.concatenate(column_blocks)
+    all_values = np.concatenate(value_blocks)
+    if reference_cell is not None:
+        interior = (all_rows != reference_cell) & (all_columns != reference_cell)
+        pinned_diagonal = float(diagonal[reference_cell])
+        all_rows = np.append(all_rows[interior], reference_cell)
+        all_columns = np.append(all_columns[interior], reference_cell)
+        all_values = np.append(all_values[interior], pinned_diagonal)
+    values, columns, indptr = _coalesce_to_csr(
+        all_rows, all_columns, all_values, grid.cell_count
+    )
+    return SparseMatrix(
+        values.astype(resolved), columns, indptr, grid.cell_count, reference_cell
+    )
+
+
 def assemble_pressure_matrix(
-    grid: UniformGrid,
+    grid: Grid,
     *,
     dtype: str = "float64",
     periodic_x: bool = True,
+    periodic_y: bool = True,
     reference_cell: int | None = 0,
 ) -> SparseMatrix:
     """Assemble ``-D G`` for the staggered mesh, optionally pinning the gauge.
@@ -138,6 +253,14 @@ def assemble_pressure_matrix(
     """
     if reference_cell is not None and not 0 <= reference_cell < grid.cell_count:
         raise ValueError("the pinned reference cell is outside the mesh")
+    if not grid.is_uniform:
+        return _assemble_mapped_pressure_matrix(
+            grid,
+            dtype=dtype,
+            periodic_x=periodic_x,
+            periodic_y=periodic_y,
+            reference_cell=reference_cell,
+        )
     resolved = np.dtype(dtype)
     nx, ny, nz = grid.nx, grid.ny, grid.nz
     plane = ny * nx
@@ -166,7 +289,14 @@ def assemble_pressure_matrix(
     transverse = np.ones(rows.size, dtype=bool) if periodic_x else (
         (i > 0) & (i < nx - 1)
     )
-    diagonal = x_diagonal + 2.0 * inverse_dy2 * transverse
+    if periodic_y:
+        y_diagonal = np.full(rows.size, 2.0 * inverse_dy2)
+    else:
+        y_diagonal = inverse_dy2 * (
+            (j > 0).astype(np.float64)
+            + (j < ny - 1).astype(np.float64)
+        )
+    diagonal = x_diagonal + y_diagonal * transverse
     diagonal += inverse_dz2 * (
         has_lower.astype(np.float64) + has_upper
     ) * transverse
@@ -185,12 +315,12 @@ def assemble_pressure_matrix(
             row_blocks.append(rows[mask])
             column_blocks.append(rows[mask] + shift)
             value_blocks.append(np.full(int(mask.sum()), -inverse_dx2))
-    for shift in (-1, 1):
-        row_blocks.append(rows[transverse])
-        column_blocks.append(
-            (k * plane + ((j + shift) % ny) * nx + i)[transverse]
-        )
-        value_blocks.append(np.full(int(transverse.sum()), -inverse_dy2))
+    for side_mask, shift in ((j > 0, -1), (j < ny - 1, 1)):
+        mask = transverse if periodic_y else (transverse & side_mask)
+        row_blocks.append(rows[mask])
+        neighbor_j = (j + shift) % ny if periodic_y else j + shift
+        column_blocks.append((k * plane + neighbor_j * nx + i)[mask])
+        value_blocks.append(np.full(int(mask.sum()), -inverse_dy2))
 
     for vertical_mask, shift in ((has_lower, -1), (has_upper, 1)):
         mask = vertical_mask & transverse
@@ -305,59 +435,94 @@ def build_amg_solver(
 
 
 def build_fft_solver(
-    grid: UniformGrid,
+    grid: Grid,
     *,
     dtype: str = "float64",
 ) -> LinearSolver:
     """Solve with a horizontal FFT and batched vertical tridiagonal solves.
 
-    The mesh is always periodic in x and y and Neumann in z (see the module
-    docstring), so a real 2-D FFT diagonalises the horizontal part exactly.
-    Each horizontal mode leaves one ``nz x nz`` Neumann tridiagonal system,
-    solved directly by vectorized Thomas sweeps. This avoids a dense vertical
-    eigenbasis, whose roundoff is amplified by the nearly singular low modes
-    in single precision.
+    The mesh is periodic in x and y and Neumann in z, so a real 2-D FFT
+    diagonalises the uniform horizontal part exactly. Each horizontal mode
+    leaves one ``nz x nz`` Neumann tridiagonal system, solved directly by
+    vectorized Thomas sweeps.
 
-    This is only valid because of that periodicity: unlike ``amg``, which
-    solves whatever sparse matrix it is handed, this diagonalisation stops
-    being correct the moment the horizontal boundary is not periodic.
+    Horizontal stretching is incompatible with Fourier diagonalisation.
+    Vertical stretching is supported because it only changes the coefficients
+    of the independent tridiagonal system for each horizontal mode.
     """
     nx, ny, nz = grid.nx, grid.ny, grid.nz
     resolved = np.dtype(dtype)
+    uniform_x = np.allclose(
+        grid.x_widths, grid.x_widths[0], rtol=1.0e-13, atol=0.0
+    )
+    uniform_y = np.allclose(
+        grid.y_widths, grid.y_widths[0], rtol=1.0e-13, atol=0.0
+    )
+    if not uniform_x or not uniform_y:
+        raise ValueError(
+            "the FFT pressure backend requires uniform x and y spacing"
+        )
     inverse_dx2 = 1.0 / grid.dx**2
     inverse_dy2 = 1.0 / grid.dy**2
-    inverse_dz2 = 1.0 / grid.dz**2
 
     # rfft2 keeps the full range of ky but only the non-redundant half of kx;
-    # cos(2 pi k / n) is symmetric under k -> n - k, so no wrapping is needed.
+    # cos(2 pi k / n) is symmetric under k -> n - k.
     kx = np.arange(nx // 2 + 1)
     ky = np.arange(ny)
     lambda_x = 2.0 * (1.0 - np.cos(2.0 * np.pi * kx / nx)) * inverse_dx2
     lambda_y = 2.0 * (1.0 - np.cos(2.0 * np.pi * ky / ny)) * inverse_dy2
     horizontal = lambda_y[:, None] + lambda_x[None, :]
 
-    # The vertical diagonal matches the one-sided wall stencil of the
-    # assembled operator. Horizontal eigenvalues are added after the FFT.
-    vertical_diagonal = np.full(nz, 2.0 * inverse_dz2, dtype=resolved)
-    if nz == 1:
-        vertical_diagonal[0] = 0.0
+    # Uniform meshes use the pointwise -D G system. Mapped meshes use the
+    # symmetric volume-integrated system prepared by PressurePoisson: the
+    # conductance through an interior z face is its horizontal area divided
+    # by the distance between adjacent cell centres.
+    if grid.is_uniform:
+        inverse_dz2 = 1.0 / grid.dz**2
+        vertical_diagonal = np.full(nz, 2.0 * inverse_dz2, dtype=resolved)
+        if nz == 1:
+            vertical_diagonal[0] = 0.0
+        else:
+            vertical_diagonal[0] = inverse_dz2
+            vertical_diagonal[-1] = inverse_dz2
+        lower_z = np.full(nz, -inverse_dz2, dtype=resolved)
+        upper_z = np.full(nz, -inverse_dz2, dtype=resolved)
+        lower_z[0] = 0.0
+        upper_z[-1] = 0.0
+        horizontal_weight = np.ones(nz, dtype=resolved)
     else:
-        vertical_diagonal[0] = inverse_dz2
-        vertical_diagonal[-1] = inverse_dz2
+        area = grid.dx * grid.dy
+        widths_z = np.asarray(grid.z_widths, dtype=resolved)
+        lower_z = np.zeros(nz, dtype=resolved)
+        upper_z = np.zeros(nz, dtype=resolved)
+        if nz > 1:
+            centre_distance = 0.5 * (widths_z[:-1] + widths_z[1:])
+            conductance = area / centre_distance
+            lower_z[1:] = -conductance
+            upper_z[:-1] = -conductance
+        vertical_diagonal = -(lower_z + upper_z)
+        horizontal_weight = area * widths_z
+
     vertical_diagonal = jnp.asarray(vertical_diagonal)
+    lower_z = jnp.asarray(lower_z)
+    upper_z = jnp.asarray(upper_z)
+    horizontal_weight = jnp.asarray(horizontal_weight)
     horizontal = jnp.asarray(horizontal, resolved)
-    off_diagonal = jnp.asarray(-inverse_dz2, resolved)
 
     def solve(right_hand_side: jnp.ndarray) -> jnp.ndarray:
         field = right_hand_side.reshape(nz, ny, nx)
         spectrum = jnp.fft.rfft2(field, axes=(1, 2))
         spectrum = spectrum.transpose(1, 2, 0)
         diagonal = (
-            vertical_diagonal[None, None, :] + horizontal[:, :, None]
+            vertical_diagonal[None, None, :]
+            + horizontal[:, :, None] * horizontal_weight[None, None, :]
         ).astype(spectrum.dtype)
-        off = off_diagonal.astype(spectrum.dtype)
-        lower = jnp.full_like(diagonal, off).at[:, :, 0].set(0.0)
-        upper = jnp.full_like(diagonal, off).at[:, :, -1].set(0.0)
+        lower = jnp.broadcast_to(
+            lower_z[None, None, :], diagonal.shape
+        ).astype(spectrum.dtype)
+        upper = jnp.broadcast_to(
+            upper_z[None, None, :], diagonal.shape
+        ).astype(spectrum.dtype)
 
         # The sole singular system is the horizontally constant mode. Pin its
         # first vertical unknown; compatibility makes the omitted equation
@@ -381,24 +546,110 @@ def build_fft_solver(
 
 def _apply_laplacian(
     pressure: jnp.ndarray,
-    grid: UniformGrid,
+    grid: Grid,
     *,
     periodic_x: bool = True,
+    periodic_y: bool = True,
+    volume_integrated: bool | None = None,
 ) -> jnp.ndarray:
     """Apply the matrix-free negative pressure Laplacian."""
-    return -divergence(
-        pressure_gradient(pressure, grid, periodic_x=periodic_x),
+    applied = -divergence(
+        pressure_gradient(
+            pressure,
+            grid,
+            periodic_x=periodic_x,
+            periodic_y=periodic_y,
+        ),
         grid,
     )
+    integrated = (
+        not grid.is_uniform
+        if volume_integrated is None
+        else volume_integrated
+    )
+    if not integrated:
+        return applied
+    return cell_volumes(grid, pressure.dtype) * applied
+
+
+def _mapped_diagonal_stencil(
+    grid: Grid,
+    dtype: np.dtype,
+    *,
+    periodic_x: bool,
+    periodic_y: bool,
+) -> jnp.ndarray:
+    """Diagonal of the symmetric volume-integrated mapped operator."""
+    hx, hy, hz = grid.x_widths, grid.y_widths, grid.z_widths
+    nx, ny, nz = grid.nx, grid.ny, grid.nz
+    dx_periodic = 0.5 * (hx + np.roll(hx, 1))
+    dy_periodic = 0.5 * (hy + np.roll(hy, 1))
+    dx_faces = np.concatenate(
+        ((0.5 * hx[0],), 0.5 * (hx[:-1] + hx[1:]), (0.5 * hx[-1],))
+    )
+    dy_faces = np.concatenate(
+        ((0.5 * hy[0],), 0.5 * (hy[:-1] + hy[1:]), (0.5 * hy[-1],))
+    )
+    dz_faces = np.concatenate(
+        ((0.5 * hz[0],), 0.5 * (hz[:-1] + hz[1:]), (0.5 * hz[-1],))
+    )
+    if periodic_x:
+        x_factor = 1.0 / dx_periodic + 1.0 / np.roll(dx_periodic, -1)
+        transverse = np.ones(nx, dtype=np.float64)
+    else:
+        x_factor = np.zeros(nx, dtype=np.float64)
+        if nx > 1:
+            x_factor[1:] += 1.0 / dx_faces[1:-1]
+            x_factor[:-1] += 1.0 / dx_faces[1:-1]
+        x_factor[-1] += 1.0 / dx_faces[-1]
+        transverse = ((np.arange(nx) > 0) & (np.arange(nx) < nx - 1)).astype(
+            np.float64
+        )
+    x_diagonal = hz[:, None, None] * hy[None, :, None] * x_factor[None, None, :]
+    if periodic_y:
+        y_factor = 1.0 / dy_periodic + 1.0 / np.roll(dy_periodic, -1)
+    else:
+        y_factor = np.zeros(ny, dtype=np.float64)
+        if ny > 1:
+            y_factor[1:] += 1.0 / dy_faces[1:-1]
+            y_factor[:-1] += 1.0 / dy_faces[1:-1]
+    y_diagonal = (
+        hz[:, None, None]
+        * hx[None, None, :]
+        * y_factor[None, :, None]
+        * transverse[None, None, :]
+    )
+    z_factor = np.zeros(nz, dtype=np.float64)
+    if nz > 1:
+        z_factor[1:] += 1.0 / dz_faces[1:-1]
+        z_factor[:-1] += 1.0 / dz_faces[1:-1]
+    z_diagonal = (
+        hy[None, :, None]
+        * hx[None, None, :]
+        * z_factor[:, None, None]
+        * transverse[None, None, :]
+    )
+    return jnp.asarray(x_diagonal + y_diagonal + z_diagonal, dtype)
 
 
 def _diagonal_stencil(
-    grid: UniformGrid,
+    grid: Grid,
     dtype: np.dtype,
     *,
     periodic_x: bool = True,
+    periodic_y: bool = True,
+    volume_integrated: bool | None = None,
 ) -> jnp.ndarray:
     """Diagonal of the periodic or mixed-boundary negative Laplacian."""
+    integrated = (
+        not grid.is_uniform
+        if volume_integrated is None
+        else volume_integrated
+    )
+    if integrated:
+        return _mapped_diagonal_stencil(
+            grid, dtype, periodic_x=periodic_x, periodic_y=periodic_y
+        )
     inverse_dx2 = 1.0 / grid.dx**2
     inverse_dy2 = 1.0 / grid.dy**2
     inverse_dz2 = 1.0 / grid.dz**2
@@ -419,13 +670,22 @@ def _diagonal_stencil(
         if periodic_x
         else ((np.arange(grid.nx) > 0) & (np.arange(grid.nx) < grid.nx - 1))
     )
+    horizontal_y = (
+        np.full(grid.ny, 2.0 * inverse_dy2)
+        if periodic_y
+        else inverse_dy2
+        * (
+            (np.arange(grid.ny) > 0).astype(np.float64)
+            + (np.arange(grid.ny) < grid.ny - 1).astype(np.float64)
+        )
+    )
     diagonal = horizontal_x[None, None, :] + transverse[None, None, :] * (
-        vertical[:, None, None] + 2.0 * inverse_dy2
+        vertical[:, None, None] + horizontal_y[None, :, None]
     )
     return jnp.asarray(diagonal, dtype)
 
 
-def _coarsening_factors(grid: UniformGrid) -> tuple[int, int, int]:
+def _coarsening_factors(grid: Grid) -> tuple[int, int, int]:
     """Per-axis factor-two agglomeration, one axis at a time as it allows it.
 
     An axis stops coarsening as soon as its cell count is odd or one, which is
@@ -437,11 +697,15 @@ def _coarsening_factors(grid: UniformGrid) -> tuple[int, int, int]:
 
 
 def _anisotropy_aware_coarsening_factors(
-    grid: UniformGrid,
+    grid: Grid,
 ) -> tuple[int, int, int]:
     """Coarsen the finest physical directions before the wider ones."""
     counts = (grid.nx, grid.ny, grid.nz)
-    spacings = (grid.dx, grid.dy, grid.dz)
+    spacings = (
+        float(np.min(grid.x_widths)),
+        float(np.min(grid.y_widths)),
+        float(np.min(grid.z_widths)),
+    )
     eligible = tuple(n > 1 and n % 2 == 0 for n in counts)
     if not any(eligible):
         return (1, 1, 1)
@@ -453,8 +717,10 @@ def _anisotropy_aware_coarsening_factors(
     )
 
 
-def _coarsen_grid(grid: UniformGrid, factors: tuple[int, int, int]) -> UniformGrid:
+def _coarsen_grid(grid: Grid, factors: tuple[int, int, int]) -> Grid:
     factor_x, factor_y, factor_z = factors
+    if isinstance(grid, AnalyticalGrid):
+        return grid.coarsen(factors)
     return UniformGrid(
         grid.nx // factor_x,
         grid.ny // factor_y,
@@ -466,10 +732,10 @@ def _coarsen_grid(grid: UniformGrid, factors: tuple[int, int, int]) -> UniformGr
 
 
 def _build_gmg_levels(
-    grid: UniformGrid,
+    grid: Grid,
     *,
     anisotropy_aware: bool = True,
-) -> tuple[list[UniformGrid], list[tuple[int, int, int]]]:
+) -> tuple[list[Grid], list[tuple[int, int, int]]]:
     """Coarsen by cell-agglomeration until no axis can be halved further."""
     levels = [grid]
     factors = []
@@ -544,20 +810,191 @@ def _restrict_axis(
     return 0.375 * (lower + upper) + 0.125 * (previous_upper + next_lower)
 
 
+def _axis_geometry(grid: Grid, axis: int) -> tuple[np.ndarray, float]:
+    if axis == 0:
+        return grid.z_centers, grid.lz
+    if axis == 1:
+        return grid.y_centers, grid.ly
+    if axis == 2:
+        return grid.x_centers, grid.lx
+    raise ValueError("transfer axis must be zero, one, or two")
+
+
+def _metric_prolongation_weights(
+    fine_grid: Grid,
+    coarse_grid: Grid,
+    axis: int,
+    *,
+    periodic: bool,
+    dtype,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Weights of each coarse value in its lower and upper fine children."""
+    fine_centers, length = _axis_geometry(fine_grid, axis)
+    coarse_centers, _ = _axis_geometry(coarse_grid, axis)
+    if fine_centers.size != 2 * coarse_centers.size:
+        raise ValueError("metric transfer requires factor-two coarsening")
+
+    lower_fine = fine_centers[::2]
+    upper_fine = fine_centers[1::2]
+    lower_current = np.ones(coarse_centers.size, dtype=np.float64)
+    upper_current = np.ones(coarse_centers.size, dtype=np.float64)
+    if periodic:
+        previous = np.roll(coarse_centers, 1)
+        previous[0] -= length
+        following = np.roll(coarse_centers, -1)
+        following[-1] += length
+        lower_current = (lower_fine - previous) / (
+            coarse_centers - previous
+        )
+        upper_current = (following - upper_fine) / (
+            following - coarse_centers
+        )
+    else:
+        lower_current[1:] = (
+            lower_fine[1:] - coarse_centers[:-1]
+        ) / (coarse_centers[1:] - coarse_centers[:-1])
+        upper_current[:-1] = (
+            coarse_centers[1:] - upper_fine[:-1]
+        ) / (coarse_centers[1:] - coarse_centers[:-1])
+    tolerance = 128.0 * np.finfo(np.float64).eps
+    if (
+        np.any(lower_current < -tolerance)
+        or np.any(lower_current > 1.0 + tolerance)
+        or np.any(upper_current < -tolerance)
+        or np.any(upper_current > 1.0 + tolerance)
+    ):
+        raise ValueError("fine centers are not nested between coarse centers")
+    return (
+        jnp.asarray(np.clip(lower_current, 0.0, 1.0), dtype),
+        jnp.asarray(np.clip(upper_current, 0.0, 1.0), dtype),
+    )
+
+
+def _metric_prolong_axis(
+    values: jnp.ndarray,
+    fine_grid: Grid,
+    coarse_grid: Grid,
+    axis: int,
+    *,
+    periodic: bool,
+) -> jnp.ndarray:
+    """Interpolate coarse values to fine centers in physical coordinates."""
+    lower_current, upper_current = _metric_prolongation_weights(
+        fine_grid,
+        coarse_grid,
+        axis,
+        periodic=periodic,
+        dtype=values.dtype,
+    )
+    weight_shape = [1] * values.ndim
+    weight_shape[axis] = lower_current.size
+    lower_current = lower_current.reshape(weight_shape)
+    upper_current = upper_current.reshape(weight_shape)
+    previous = _neighbor(values, axis, 1, periodic=periodic)
+    following = _neighbor(values, axis, -1, periodic=periodic)
+    lower = lower_current * values + (1.0 - lower_current) * previous
+    upper = upper_current * values + (1.0 - upper_current) * following
+    shape = list(values.shape)
+    shape[axis] *= 2
+    return jnp.stack((lower, upper), axis=axis + 1).reshape(shape)
+
+
+def _metric_restrict_axis(
+    integrated_residual: jnp.ndarray,
+    fine_grid: Grid,
+    coarse_grid: Grid,
+    axis: int,
+    *,
+    periodic: bool,
+) -> jnp.ndarray:
+    """Restrict mapped residuals with the volume-weighted adjoint.
+
+    The mapped operator carries ``V_f r_f`` rather than the intensive
+    residual ``r_f``. Applying ``P.T`` here is therefore equivalent to the
+    volume-weighted restriction ``V_c**-1 P.T V_f`` in intensive variables.
+    It also keeps the multigrid preconditioner symmetric for outer PCG.
+    """
+    lower_index = [slice(None)] * integrated_residual.ndim
+    upper_index = [slice(None)] * integrated_residual.ndim
+    lower_index[axis] = slice(0, None, 2)
+    upper_index[axis] = slice(1, None, 2)
+    lower = integrated_residual[tuple(lower_index)]
+    upper = integrated_residual[tuple(upper_index)]
+    lower_current, upper_current = _metric_prolongation_weights(
+        fine_grid,
+        coarse_grid,
+        axis,
+        periodic=periodic,
+        dtype=integrated_residual.dtype,
+    )
+    weight_shape = [1] * integrated_residual.ndim
+    weight_shape[axis] = lower_current.size
+    lower_current = lower_current.reshape(weight_shape)
+    upper_current = upper_current.reshape(weight_shape)
+    restricted = lower_current * lower + upper_current * upper
+    to_previous = (1.0 - lower_current) * lower
+    to_following = (1.0 - upper_current) * upper
+    if periodic:
+        return (
+            restricted
+            + jnp.roll(to_previous, -1, axis=axis)
+            + jnp.roll(to_following, 1, axis=axis)
+        )
+    zero_shape = list(restricted.shape)
+    zero_shape[axis] = 1
+    zero = jnp.zeros(zero_shape, integrated_residual.dtype)
+    previous_source = [slice(None)] * restricted.ndim
+    previous_source[axis] = slice(1, None)
+    following_source = [slice(None)] * restricted.ndim
+    following_source[axis] = slice(0, -1)
+    return (
+        restricted
+        + jnp.concatenate(
+            (to_previous[tuple(previous_source)], zero), axis=axis
+        )
+        + jnp.concatenate(
+            (zero, to_following[tuple(following_source)]), axis=axis
+        )
+    )
+
+
 def _restrict(
     residual: jnp.ndarray,
     factors: tuple[int, int, int],
     *,
     periodic_x: bool = True,
+    periodic_y: bool = True,
+    fine_grid: Grid | None = None,
+    coarse_grid: Grid | None = None,
 ) -> jnp.ndarray:
-    """Cell-centred full weighting, scaled-adjoint to :func:`_prolong`."""
+    """Restrict an intensive uniform or volume-integrated mapped residual."""
+    if (fine_grid is None) != (coarse_grid is None):
+        raise ValueError("both transfer grids must be supplied together")
     factor_x, factor_y, factor_z = factors
     if factor_z == 2:
-        residual = _restrict_axis(residual, 0, periodic=False)
+        residual = (
+            _restrict_axis(residual, 0, periodic=False)
+            if fine_grid is None
+            else _metric_restrict_axis(
+                residual, fine_grid, coarse_grid, 0, periodic=False
+            )
+        )
     if factor_y == 2:
-        residual = _restrict_axis(residual, 1, periodic=True)
+        residual = (
+            _restrict_axis(residual, 1, periodic=periodic_y)
+            if fine_grid is None
+            else _metric_restrict_axis(
+                residual, fine_grid, coarse_grid, 1, periodic=periodic_y
+            )
+        )
     if factor_x == 2:
-        residual = _restrict_axis(residual, 2, periodic=periodic_x)
+        residual = (
+            _restrict_axis(residual, 2, periodic=periodic_x)
+            if fine_grid is None
+            else _metric_restrict_axis(
+                residual, fine_grid, coarse_grid, 2, periodic=periodic_x
+            )
+        )
     return residual
 
 
@@ -582,23 +1019,47 @@ def _prolong(
     factors: tuple[int, int, int],
     *,
     periodic_x: bool = True,
+    periodic_y: bool = True,
+    fine_grid: Grid | None = None,
+    coarse_grid: Grid | None = None,
 ) -> jnp.ndarray:
-    """Cell-centred trilinear interpolation with Neumann extension in z."""
+    """Prolong in computational or mapped physical coordinates."""
+    if (fine_grid is None) != (coarse_grid is None):
+        raise ValueError("both transfer grids must be supplied together")
     factor_x, factor_y, factor_z = factors
     if factor_z == 2:
-        correction = _prolong_axis(correction, 0, periodic=False)
+        correction = (
+            _prolong_axis(correction, 0, periodic=False)
+            if fine_grid is None
+            else _metric_prolong_axis(
+                correction, fine_grid, coarse_grid, 0, periodic=False
+            )
+        )
     if factor_y == 2:
-        correction = _prolong_axis(correction, 1, periodic=True)
+        correction = (
+            _prolong_axis(correction, 1, periodic=periodic_y)
+            if fine_grid is None
+            else _metric_prolong_axis(
+                correction, fine_grid, coarse_grid, 1, periodic=periodic_y
+            )
+        )
     if factor_x == 2:
-        correction = _prolong_axis(correction, 2, periodic=periodic_x)
+        correction = (
+            _prolong_axis(correction, 2, periodic=periodic_x)
+            if fine_grid is None
+            else _metric_prolong_axis(
+                correction, fine_grid, coarse_grid, 2, periodic=periodic_x
+            )
+        )
     return correction
 
 
 def build_gmg_solver(
-    grid: UniformGrid,
+    grid: Grid,
     *,
     dtype: str = "float64",
     periodic_x: bool = True,
+    periodic_y: bool = True,
     tolerance: float | None = None,
     max_iterations: int = 200,
     presweeps: int = 2,
@@ -639,8 +1100,18 @@ def build_gmg_solver(
     levels, factors = _build_gmg_levels(
         grid, anisotropy_aware=anisotropy_aware
     )
+    # Once the finest operator is volume integrated, retain that
+    # normalization even if a mapped coarse level happens to have uniform
+    # widths (for example after clustered z coarsens to one cell).
+    volume_integrated = not grid.is_uniform
     diagonals = [
-        _diagonal_stencil(level, resolved, periodic_x=periodic_x)
+        _diagonal_stencil(
+            level,
+            resolved,
+            periodic_x=periodic_x,
+            periodic_y=periodic_y,
+            volume_integrated=volume_integrated,
+        )
         for level in levels[:-1]
     ]
     coarse_grid = levels[-1]
@@ -665,6 +1136,8 @@ def build_gmg_solver(
                 flat.reshape(coarse_shape),
                 coarse_grid,
                 periodic_x=periodic_x,
+                periodic_y=periodic_y,
+                volume_integrated=volume_integrated,
             ).reshape(-1)
 
         def iteration(_, state):
@@ -701,7 +1174,11 @@ def build_gmg_solver(
     ) -> jnp.ndarray:
         for _ in range(sweeps):
             residual = rhs - _apply_laplacian(
-                pressure, levels[level], periodic_x=periodic_x
+                pressure,
+                levels[level],
+                periodic_x=periodic_x,
+                periodic_y=periodic_y,
+                volume_integrated=volume_integrated,
             )
             pressure = pressure + omega * residual / diagonals[level]
         return pressure
@@ -711,16 +1188,32 @@ def build_gmg_solver(
             return coarse_solve(rhs)
         pressure = smooth(jnp.zeros_like(rhs), rhs, level, presweeps)
         residual = rhs - _apply_laplacian(
-            pressure, levels[level], periodic_x=periodic_x
+            pressure,
+            levels[level],
+            periodic_x=periodic_x,
+            periodic_y=periodic_y,
+            volume_integrated=volume_integrated,
         )
-        coarse_correction = v_cycle(
-            _restrict(
-                residual, factors[level], periodic_x=periodic_x
+        coarse_rhs = _restrict(
+            residual,
+            factors[level],
+            periodic_x=periodic_x,
+            periodic_y=periodic_y,
+            fine_grid=levels[level] if volume_integrated else None,
+            coarse_grid=(
+                levels[level + 1] if volume_integrated else None
             ),
-            level + 1,
         )
+        coarse_correction = v_cycle(coarse_rhs, level + 1)
         pressure = pressure + _prolong(
-            coarse_correction, factors[level], periodic_x=periodic_x
+            coarse_correction,
+            factors[level],
+            periodic_x=periodic_x,
+            periodic_y=periodic_y,
+            fine_grid=levels[level] if volume_integrated else None,
+            coarse_grid=(
+                levels[level + 1] if volume_integrated else None
+            ),
         )
         return smooth(pressure, rhs, level, postsweeps)
 
@@ -728,7 +1221,13 @@ def build_gmg_solver(
         rhs = flat.reshape(shape)
         pressure = v_cycle(rhs, 0)
         for _ in range(cycles_per_precondition - 1):
-            residual = rhs - _apply_laplacian(pressure, grid, periodic_x=periodic_x)
+            residual = rhs - _apply_laplacian(
+                pressure,
+                grid,
+                periodic_x=periodic_x,
+                periodic_y=periodic_y,
+                volume_integrated=volume_integrated,
+            )
             pressure = pressure + v_cycle(residual, 0)
         if periodic_x:
             pressure = pressure - jnp.mean(pressure)
@@ -740,7 +1239,11 @@ def build_gmg_solver(
     ) -> jnp.ndarray:
         def matvec(flat: jnp.ndarray) -> jnp.ndarray:
             return _apply_laplacian(
-                flat.reshape(shape), grid, periodic_x=periodic_x
+                flat.reshape(shape),
+                grid,
+                periodic_x=periodic_x,
+                periodic_y=periodic_y,
+                volume_integrated=volume_integrated,
             ).reshape(-1)
 
         solution, _ = cg(
@@ -761,10 +1264,11 @@ def build_gmg_solver(
 class PressurePoisson:
     """The assembled pressure operator together with its linear solver."""
 
-    grid: UniformGrid
+    grid: Grid
     matrix: SparseMatrix
     linear_solver: LinearSolver
     periodic_x: bool = True
+    periodic_y: bool = True
 
     def solve(
         self,
@@ -799,16 +1303,25 @@ class PressurePoisson:
         whenever the right-hand side comes from a divergence.
         """
         applied = divergence(pressure_gradient(
-            pressure, self.grid, periodic_x=self.periodic_x
+            pressure, self.grid, periodic_x=self.periodic_x, periodic_y=self.periodic_y
         ), self.grid)
         error = applied - right_hand_side
         if self.periodic_x:
-            error = error - jnp.mean(error)
+            if self.grid.is_uniform:
+                error = error - jnp.mean(error)
+            else:
+                volumes = cell_volumes(self.grid, error.dtype)
+                error = error - jnp.sum(volumes * error) / jnp.sum(volumes)
         return jnp.linalg.norm(error)
 
     def _prepare(self, right_hand_side: jnp.ndarray) -> jnp.ndarray:
         """Negate, make compatible with the null space, and drop the gauge row."""
-        flat = -right_hand_side.reshape(-1)
+        if self.grid.is_uniform:
+            flat = -right_hand_side.reshape(-1)
+        else:
+            flat = -(right_hand_side * cell_volumes(
+                self.grid, right_hand_side.dtype
+            )).reshape(-1)
         if self.periodic_x:
             flat = flat - jnp.mean(flat)
         if self.matrix.reference_cell is None:
@@ -817,48 +1330,72 @@ class PressurePoisson:
 
 
 def build_pressure_poisson(
-    grid: UniformGrid,
+    grid: Grid,
     *,
     backend: str = "amg",
     periodic_x: bool = True,
+    periodic_y: bool = True,
     dtype: str = "float64",
     reference_cell: int | None = 0,
     config: Mapping[str, Any] | None = None,
 ) -> PressurePoisson:
     """Assemble the pressure operator and attach the requested solver."""
-    if backend == "fft" and not periodic_x:
-        raise ValueError("the FFT pressure backend requires periodic x")
+    if backend == "fft" and (not periodic_x or not periodic_y):
+        raise ValueError("the FFT pressure backend requires periodic x and y")
+    if backend == "fft":
+        uniform_x = np.allclose(
+            grid.x_widths, grid.x_widths[0], rtol=1.0e-13, atol=0.0
+        )
+        uniform_y = np.allclose(
+            grid.y_widths, grid.y_widths[0], rtol=1.0e-13, atol=0.0
+        )
+        if not uniform_x or not uniform_y:
+            raise ValueError(
+                "the FFT pressure backend requires uniform x and y spacing"
+            )
     if backend in ("fft", "gmg"):
         # Both handle the null space themselves (an explicit eigenmode for
         # ``fft``, symmetry of the unpinned operator for ``gmg``), so the
         # assembled matrix kept for bookkeeping stays unpinned.
-        matrix = assemble_pressure_matrix(
-            grid,
-            dtype=dtype,
-            periodic_x=periodic_x,
-            reference_cell=None,
-        )
         if backend == "fft":
+            matrix = assemble_pressure_matrix(
+                grid,
+                dtype=dtype,
+                periodic_x=periodic_x,
+                periodic_y=periodic_y,
+                reference_cell=None,
+            )
             solver = build_fft_solver(grid, dtype=dtype, **dict(config or {}))
         else:
+            # GMG is matrix-free; avoid an unused multi-gigabyte CSR allocation.
+            resolved = np.dtype(dtype)
+            matrix = SparseMatrix(
+                np.empty((0,), resolved),
+                np.empty((0,), np.int32),
+                np.zeros((1,), np.int32),
+                grid.cell_count,
+                None,
+            )
             solver = build_gmg_solver(
                 grid,
                 dtype=dtype,
                 periodic_x=periodic_x,
+                periodic_y=periodic_y,
                 **dict(config or {}),
             )
-        return PressurePoisson(grid, matrix, solver, periodic_x)
+        return PressurePoisson(grid, matrix, solver, periodic_x, periodic_y)
     matrix = assemble_pressure_matrix(
         grid,
         dtype=dtype,
         periodic_x=periodic_x,
+        periodic_y=periodic_y,
         reference_cell=reference_cell,
     )
     if backend == "amg":
         solver = build_amg_solver(matrix, config=config)
     else:
         raise ValueError(f"unsupported pressure backend: {backend!r}")
-    return PressurePoisson(grid, matrix, solver, periodic_x)
+    return PressurePoisson(grid, matrix, solver, periodic_x, periodic_y)
 
 
 def project(
@@ -866,15 +1403,24 @@ def project(
     poisson: PressurePoisson,
     dt: float,
     initial_pressure: jnp.ndarray | None = None,
+    target_divergence: jnp.ndarray | None = None,
 ) -> tuple[StaggeredVelocity, jnp.ndarray]:
     """Remove the divergent part of a candidate velocity."""
     grid = poisson.grid
+    current_divergence = divergence(velocity, grid)
+    target = (
+        jnp.zeros_like(current_divergence)
+        if target_divergence is None
+        else jnp.asarray(target_divergence, current_divergence.dtype)
+    )
+    if target.shape != current_divergence.shape:
+        raise ValueError("target divergence must be cell centred")
     pressure = poisson.solve(
-        divergence(velocity, grid) / dt,
+        (current_divergence - target) / dt,
         initial_pressure,
     )
     gradient = pressure_gradient(
-        pressure, grid, periodic_x=poisson.periodic_x
+        pressure, grid, periodic_x=poisson.periodic_x, periodic_y=poisson.periodic_y
     )
     corrected = StaggeredVelocity(
         velocity.x - dt * gradient.x,

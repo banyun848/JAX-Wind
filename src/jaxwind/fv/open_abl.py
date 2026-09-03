@@ -7,7 +7,7 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 from .abl import AtmosphericSolution
 from .buoyancy import LinearBoussinesqBuoyancy, boussinesq_tendency
@@ -30,7 +30,7 @@ from .surface import (
 
 
 def build_open_atmospheric_step(
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries,
     poisson: PressurePoisson,
     momentum: FlowModel,
@@ -38,6 +38,7 @@ def build_open_atmospheric_step(
     buoyancy: LinearBoussinesqBuoyancy | None = None,
     surface_transfer: MoninObukhovSurface | None = None,
     *,
+    scalar_source: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     scheme: str = "ab2",
 ) -> Callable[[AtmosphericSolution, float, InflowPlane], AtmosphericSolution]:
     """Build an open-boundary AB2 or single-projection fast-RK3 step."""
@@ -51,6 +52,8 @@ def build_open_atmospheric_step(
         raise ValueError(
             "buoyancy and coupled surface transfer require an active scalar"
         )
+    if scalar is None and scalar_source is not None:
+        raise ValueError("a scalar source requires an active scalar")
     if surface_transfer is not None and momentum.surface is not None:
         raise ValueError(
             "independent and coupled FV surface models are mutually exclusive"
@@ -116,6 +119,8 @@ def build_open_atmospheric_step(
                 eddy_viscosity=subfilter_viscosity,
                 lower_flux=None if exchange is None else exchange.scalar_flux,
             )
+            if scalar_source is not None:
+                current_scalar = current_scalar + scalar_source(execution_time)
         return (
             current_velocity,
             current_scalar_field,
@@ -201,7 +206,7 @@ def build_open_atmospheric_step(
         previous_scalar = solution.scalar_tendency
         pressure = solution.pressure
         step_size = jnp.asarray(dt, velocity.x.dtype)
-        lagged = pressure_gradient(pressure, grid, periodic_x=False)
+        lagged = pressure_gradient(pressure, grid, periodic_x=False, periodic_y=poisson.periodic_y)
         last = len(current_weights) - 1
 
         for stage, (current_weight, previous_weight) in enumerate(

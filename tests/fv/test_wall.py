@@ -22,6 +22,8 @@ from jaxwind.fv import (
     friction_velocity,
     logarithmic_profile,
     monin_obukhov_boundaries,
+    sidewall_stress,
+    sidewall_tendency,
     surface_stress,
     wall_tendency,
 )
@@ -203,6 +205,30 @@ class WallTendencyTest(unittest.TestCase):
         )(flow, 0.0)
         column = float(jnp.mean(jnp.sum(tendency.x, axis=0)) * self.grid.dz)
         self.assertLess(abs(column), 1.0e-12 * forcing * self.grid.lz)
+
+
+class SideWallStressTest(unittest.TestCase):
+    grid = UniformGrid(6, 5, 4, 6.0, 5.0, 4.0)
+    model = MoninObukhovWall(ROUGHNESS)
+
+    def velocity(self) -> StaggeredVelocity:
+        return StaggeredVelocity(
+            jnp.full((4, 5, 7), 2.0),
+            jnp.zeros((4, 6, 6)),
+            jnp.zeros((5, 5, 6)),
+        )
+
+    def test_sidewall_stress_opposes_flow_only_in_adjacent_rows(self) -> None:
+        lower, upper = sidewall_stress(self.velocity(), self.grid, self.model)
+        for stress_u, stress_w in (lower, upper):
+            self.assertGreater(float(jnp.min(stress_u)), 0.0)
+            self.assertEqual(float(jnp.max(jnp.abs(stress_w))), 0.0)
+        tendency = sidewall_tendency(self.velocity(), self.grid, self.model)
+        self.assertLess(float(jnp.max(tendency.x[:, 0])), 0.0)
+        self.assertLess(float(jnp.max(tendency.x[:, -1])), 0.0)
+        self.assertEqual(float(jnp.max(jnp.abs(tendency.x[:, 1:-1]))), 0.0)
+        self.assertEqual(float(jnp.max(jnp.abs(tendency.y))), 0.0)
+        self.assertEqual(float(jnp.max(jnp.abs(tendency.z))), 0.0)
 
 
 if __name__ == "__main__":

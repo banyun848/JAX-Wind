@@ -17,6 +17,27 @@ from jaxwind._jax.actuator_line import (
 from jaxwind._jax.fringe import plateau_fringe_mask
 
 
+def _local_z_metrics(grid, dtype, local_nz, partition_index):
+    """Return physical coordinates and control widths for one z slab."""
+    start = partition_index * local_nz
+
+    def local(values):
+        return lax.dynamic_slice_in_dim(
+            jnp.asarray(values, dtype=dtype), start, local_nz
+        )
+
+    z_widths = jnp.asarray(grid.z_widths, dtype=dtype)
+    upper_face_widths = jnp.concatenate(
+        (0.5 * (z_widths[:-1] + z_widths[1:]), 0.5 * z_widths[-1:])
+    )
+    return (
+        local(grid.z_centers),
+        local(grid.z_faces[1:]),
+        local(grid.z_widths),
+        local(upper_face_widths),
+    )
+
+
 def build_wind_tunnel_kernel(*, grid, axis_name: str):
     def wind_tunnel_local(
         u,
@@ -47,10 +68,18 @@ def build_wind_tunnel_kernel(*, grid, axis_name: str):
         dtype = u.dtype
         local_nz = u.shape[0]
         partition_index = lax.axis_index(axis_name)
-        x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
-        y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
-        z_index = partition_index * local_nz + jnp.arange(local_nz, dtype=dtype)
-        z = (z_index + 0.5) * grid.dz
+        x = jnp.asarray(grid.x_centers, dtype=dtype)
+        y = jnp.asarray(grid.y_centers, dtype=dtype)
+        z, _, z_widths, _ = _local_z_metrics(
+            grid, dtype, local_nz, partition_index
+        )
+        x_widths = jnp.asarray(grid.x_widths, dtype=dtype)
+        y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
+        cell_volumes = (
+            z_widths[:, None, None]
+            * y_widths[None, :, None]
+            * x_widths[None, None, :]
+        )
 
         periodic_x = (
             jnp.mod(x - jnp.asarray(disk_x, dtype) + 0.5 * grid.lx, grid.lx)
@@ -92,19 +121,19 @@ def build_wind_tunnel_kernel(*, grid, axis_name: str):
             jnp.asarray(disk_diameter, dtype) ** 2
             - jnp.asarray(hub_diameter, dtype) ** 2
         )
-        kernel_integral = (
-            lax.psum(jnp.sum(disk_kernel), axis_name)
-            * grid.dx
-            * grid.dy
-            * grid.dz
+        kernel_integral = lax.psum(
+            jnp.sum(disk_kernel * cell_volumes), axis_name
         )
         disk_kernel = disk_kernel * disk_area / jnp.maximum(
             kernel_integral,
             jnp.finfo(dtype).tiny,
         )
         normal_velocity = u * normal_x + v * normal_y
-        numerator = lax.psum(jnp.sum(normal_velocity * disk_kernel), axis_name)
-        denominator = lax.psum(jnp.sum(disk_kernel), axis_name)
+        weighted_kernel = disk_kernel * cell_volumes
+        numerator = lax.psum(
+            jnp.sum(normal_velocity * weighted_kernel), axis_name
+        )
+        denominator = lax.psum(jnp.sum(weighted_kernel), axis_name)
         disk_velocity = numerator / jnp.maximum(denominator, jnp.finfo(dtype).tiny)
         velocity_correction = jnp.where(
             jnp.asarray(filtered_velocity_correction_enabled),
@@ -201,20 +230,23 @@ def build_blade_element_disk_kernel(
         tiny = jnp.finfo(dtype).tiny
         widths = jnp.asarray(element_smoothing_widths, dtype)
 
-        x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
-        y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
-        zi = partition_index * local_nz + jnp.arange(local_nz, dtype=dtype)
-        z_cell = (zi + 0.5) * grid.dz
-        z_upper = (zi + 1.0) * grid.dz
+        x = jnp.asarray(grid.x_centers, dtype=dtype)
+        y = jnp.asarray(grid.y_centers, dtype=dtype)
+        z_cell, z_upper, z_widths, z_upper_widths = _local_z_metrics(
+            grid, dtype, local_nz, partition_index
+        )
+        x_widths = jnp.asarray(grid.x_widths, dtype=dtype)
+        y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
         dx = jnp.mod(x - disk_x + 0.5 * grid.lx, grid.lx) - 0.5 * grid.lx
         dy = jnp.mod(y - disk_y + 0.5 * grid.ly, grid.ly) - 0.5 * grid.ly
 
         raw_x = jnp.exp(-(dx[None, :] / widths[:, None]) ** 2)
-        weights_x = raw_x / jnp.maximum(
-            jnp.sum(raw_x, axis=1, keepdims=True), tiny
+        weighted_x = raw_x * x_widths[None, :]
+        weights_x = weighted_x / jnp.maximum(
+            jnp.sum(weighted_x, axis=1, keepdims=True), tiny
         )
 
-        def ring_geometry(z_coordinates):
+        def ring_geometry(z_coordinates, transverse_areas):
             yy = dy[None, None, :]
             zz = z_coordinates[None, :, None] - jnp.asarray(disk_z, dtype)
             radius = jnp.sqrt(yy * yy + zz * zz)
@@ -225,15 +257,30 @@ def build_blade_element_disk_kernel(
                 )
                 ** 2
             )
-            denominator = lax.psum(jnp.sum(raw, axis=(1, 2)), axis_name)
-            weights = raw / jnp.maximum(denominator[:, None, None], tiny)
+            weighted = raw * transverse_areas[None, :, :]
+            denominator = lax.psum(
+                jnp.sum(weighted, axis=(1, 2)), axis_name
+            )
+            weights = weighted / jnp.maximum(
+                denominator[:, None, None], tiny
+            )
             # Positive rotation points along +y at the top of the rotor.
             tangent_y = zz / jnp.maximum(radius, tiny)
             tangent_z = -yy / jnp.maximum(radius, tiny)
             return weights, tangent_y[0], tangent_z[0]
 
-        rings_cell, tangent_y_cell, _ = ring_geometry(z_cell)
-        rings_upper, _, tangent_z_upper = ring_geometry(z_upper)
+        cell_areas = z_widths[:, None] * y_widths[None, :]
+        upper_areas = z_upper_widths[:, None] * y_widths[None, :]
+        global_upper = partition_index * local_nz + jnp.arange(local_nz) + 1
+        spread_upper_widths = jnp.where(
+            global_upper < grid.nz, z_upper_widths, 0.0
+        )
+        spread_upper_areas = spread_upper_widths[:, None] * y_widths[None, :]
+        rings_cell, tangent_y_cell, _ = ring_geometry(z_cell, cell_areas)
+        rings_upper, _, tangent_z_upper = ring_geometry(z_upper, upper_areas)
+        rings_upper_force, _, _ = ring_geometry(
+            z_upper, spread_upper_areas
+        )
 
         sampled_u_local = jnp.einsum(
             "rzy,rx,zyx->r", rings_cell, weights_x, u, optimize="optimal"
@@ -291,19 +338,30 @@ def build_blade_element_disk_kernel(
         forces = forces * jnp.asarray(blade_count, dtype)
         axial_force = forces[:, 0]
         tangent_force = forces[:, 1]
-        inverse_volume = 1.0 / (grid.dx * grid.dy * grid.dz)
-        source_x = inverse_volume * jnp.einsum(
+        cell_volumes = (
+            z_widths[:, None, None]
+            * y_widths[None, :, None]
+            * x_widths[None, None, :]
+        )
+        upper_face_volumes = (
+            jnp.where(spread_upper_widths > 0.0, spread_upper_widths, 1.0)[
+                :, None, None
+            ]
+            * y_widths[None, :, None]
+            * x_widths[None, None, :]
+        )
+        source_x = jnp.einsum(
             "r,rzy,rx->zyx", axial_force, rings_cell, weights_x,
             optimize="optimal",
-        )
-        source_y = inverse_volume * jnp.einsum(
+        ) / cell_volumes
+        source_y = jnp.einsum(
             "r,rzy,zy,rx->zyx", tangent_force, rings_cell,
             tangent_y_cell, weights_x, optimize="optimal",
-        )
-        source_z = inverse_volume * jnp.einsum(
-            "r,rzy,zy,rx->zyx", tangent_force, rings_upper,
+        ) / cell_volumes
+        source_z = jnp.einsum(
+            "r,rzy,zy,rx->zyx", tangent_force, rings_upper_force,
             tangent_z_upper, weights_x, optimize="optimal",
-        )
+        ) / upper_face_volumes
         source_z = source_z.at[-1].set(
             jnp.where(partition_index == partition_count - 1, 0.0, source_z[-1])
         )
@@ -336,10 +394,19 @@ def build_nacelle_tower_kernel(*, grid, axis_name: str):
         tiny = jnp.finfo(dtype).tiny
         local_nz = u.shape[0]
         partition_index = lax.axis_index(axis_name)
-        x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
-        y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
-        zi = partition_index * local_nz + jnp.arange(local_nz, dtype=dtype)
-        z = (zi + 0.5) * grid.dz
+        x = jnp.asarray(grid.x_centers, dtype=dtype)
+        y = jnp.asarray(grid.y_centers, dtype=dtype)
+        z, _, z_widths, _ = _local_z_metrics(
+            grid, dtype, local_nz, partition_index
+        )
+        x_widths = jnp.asarray(grid.x_widths, dtype=dtype)
+        y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
+        cell_volumes = (
+            z_widths[:, None, None]
+            * y_widths[None, :, None]
+            * x_widths[None, None, :]
+        )
+        horizontal_areas = y_widths[:, None] * x_widths[None, :]
         dx = jnp.mod(x - body_x + 0.5 * grid.lx, grid.lx) - 0.5 * grid.lx
         dy = jnp.mod(y - body_y + 0.5 * grid.ly, grid.ly) - 0.5 * grid.ly
         width = jnp.asarray(smoothing_width, dtype)
@@ -352,8 +419,9 @@ def build_nacelle_tower_kernel(*, grid, axis_name: str):
             * jnp.exp(-(dy[None, :, None] / width) ** 2)
             * jnp.exp(-((z[:, None, None] - hub_height) / width) ** 2)
         )
-        nacelle_sum = lax.psum(jnp.sum(nacelle_raw), axis_name)
-        nacelle_weights = nacelle_raw / jnp.maximum(nacelle_sum, tiny)
+        nacelle_mass = nacelle_raw * cell_volumes
+        nacelle_sum = lax.psum(jnp.sum(nacelle_mass), axis_name)
+        nacelle_weights = nacelle_mass / jnp.maximum(nacelle_sum, tiny)
         nacelle_velocity = lax.psum(
             jnp.sum(nacelle_weights * u), axis_name
         )
@@ -362,9 +430,7 @@ def build_nacelle_tower_kernel(*, grid, axis_name: str):
             -0.5 * nacelle_drag_coefficient * nacelle_area
             * nacelle_velocity * jnp.abs(nacelle_velocity)
         )
-        source_x_nacelle = (
-            nacelle_force * nacelle_weights / (grid.dx * grid.dy * grid.dz)
-        )
+        source_x_nacelle = nacelle_force * nacelle_weights / cell_volumes
 
         # The tower is evaluated independently at every cell-centred height.
         # This gives local vector cross-flow drag and a linearly tapered width.
@@ -372,7 +438,10 @@ def build_nacelle_tower_kernel(*, grid, axis_name: str):
             jnp.exp(-(dx[None, :] / width) ** 2)
             * jnp.exp(-(dy[:, None] / width) ** 2)
         )
-        tower_weights_xy = tower_raw_xy / jnp.maximum(jnp.sum(tower_raw_xy), tiny)
+        tower_mass_xy = tower_raw_xy * horizontal_areas
+        tower_weights_xy = tower_mass_xy / jnp.maximum(
+            jnp.sum(tower_mass_xy), tiny
+        )
         sampled_u = jnp.einsum("yx,zyx->z", tower_weights_xy, u)
         tower_top = hub_height - 0.5 * nacelle_diameter
         fraction = jnp.clip(z / jnp.maximum(tower_top, tiny), 0.0, 1.0)
@@ -384,11 +453,10 @@ def build_nacelle_tower_kernel(*, grid, axis_name: str):
             -0.5 * tower_drag_coefficient * diameter
             * sampled_u * jnp.abs(sampled_u)
         )
-        horizontal_scale = 1.0 / (grid.dx * grid.dy)
         source_x_tower = (
             active[:, None, None] * force_per_length[:, None, None]
             * tower_weights_xy[None, :, :]
-            * horizontal_scale
+            / horizontal_areas[None, :, :]
         )
         return (
             source_x_nacelle + source_x_tower,
@@ -468,18 +536,17 @@ def build_actuator_line_kernel(
         )
         local_nz = u.shape[0]
         partition_index = lax.axis_index(axis_name)
-        x_coordinates = (
-            jnp.arange(grid.nx, dtype=dtype) + 0.5
-        ) * grid.dx
-        y_coordinates = (
-            jnp.arange(grid.ny, dtype=dtype) + 0.5
-        ) * grid.dy
-        global_cell_index = (
-            partition_index * local_nz
-            + jnp.arange(local_nz, dtype=dtype)
-        )
-        z_cell_coordinates = (global_cell_index + 0.5) * grid.dz
-        z_upper_coordinates = (global_cell_index + 1.0) * grid.dz
+        tiny = jnp.finfo(dtype).tiny
+        x_coordinates = jnp.asarray(grid.x_centers, dtype=dtype)
+        y_coordinates = jnp.asarray(grid.y_centers, dtype=dtype)
+        x_widths = jnp.asarray(grid.x_widths, dtype=dtype)
+        y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
+        (
+            z_cell_coordinates,
+            z_upper_coordinates,
+            z_cell_widths,
+            z_upper_widths,
+        ) = _local_z_metrics(grid, dtype, local_nz, partition_index)
 
         weights_x = gaussian_weights(
             positions[:, 0],
@@ -487,55 +554,107 @@ def build_actuator_line_kernel(
             smoothing_width=smoothing_width,
             period=grid.lx,
         )
+        weights_x = weights_x * x_widths[None, :]
+        weights_x = weights_x / jnp.maximum(
+            jnp.sum(weights_x, axis=1, keepdims=True), tiny
+        )
         weights_y = gaussian_weights(
             positions[:, 1],
             y_coordinates,
             smoothing_width=smoothing_width,
             period=grid.ly,
         )
-        width = jnp.asarray(smoothing_width, dtype=dtype)
-        raw_z_cells = jnp.exp(
-            -(
-                (z_cell_coordinates[None, :] - positions[:, 2, None])
-                / width
-            )
-            ** 2
+        weights_y = weights_y * y_widths[None, :]
+        weights_y = weights_y / jnp.maximum(
+            jnp.sum(weights_y, axis=1, keepdims=True), tiny
         )
-        cell_denominator = lax.psum(
-            jnp.sum(raw_z_cells, axis=1),
+        width = jnp.asarray(smoothing_width, dtype=dtype)
+        vertical_width = width if width.ndim == 0 else width[:, None]
+        cell_exponent = (
+            (z_cell_coordinates[None, :] - positions[:, 2, None])
+            / vertical_width
+        ) ** 2
+        cell_minimum = lax.pmin(
+            jnp.min(cell_exponent, axis=1),
             axis_name,
         )
-        weights_z_cells = raw_z_cells / jnp.maximum(
+        raw_z_cells = jnp.exp(
+            -(cell_exponent - cell_minimum[:, None])
+        )
+        weighted_z_cells = raw_z_cells * z_cell_widths[None, :]
+        cell_denominator = lax.psum(
+            jnp.sum(weighted_z_cells, axis=1),
+            axis_name,
+        )
+        weights_z_cells = weighted_z_cells / jnp.maximum(
             cell_denominator[:, None],
-            jnp.finfo(dtype).tiny,
+            tiny,
         )
 
+        upper_exponent = (
+            (z_upper_coordinates[None, :] - positions[:, 2, None])
+            / vertical_width
+        ) ** 2
+        lower_exponent = (positions[:, 2] / width) ** 2
+        local_face_minimum = jnp.minimum(
+            jnp.min(upper_exponent, axis=1),
+            jnp.where(
+                partition_index == 0,
+                lower_exponent,
+                jnp.full_like(lower_exponent, jnp.inf),
+            ),
+        )
+        face_minimum = lax.pmin(local_face_minimum, axis_name)
         raw_z_upper = jnp.exp(
-            -(
-                (z_upper_coordinates[None, :] - positions[:, 2, None])
-                / width
-            )
-            ** 2
+            -(upper_exponent - face_minimum[:, None])
         )
         raw_lower_boundary = jnp.exp(
-            -(positions[:, 2] / width) ** 2
+            -(lower_exponent - face_minimum)
         )
+        weighted_z_upper = raw_z_upper * z_upper_widths[None, :]
+        lower_width = 0.5 * jnp.asarray(grid.z_widths[0], dtype=dtype)
+        weighted_lower_boundary = raw_lower_boundary * lower_width
         face_denominator = lax.psum(
-            jnp.sum(raw_z_upper, axis=1)
+            jnp.sum(weighted_z_upper, axis=1)
             + jnp.where(
                 partition_index == 0,
-                raw_lower_boundary,
+                weighted_lower_boundary,
                 jnp.zeros_like(raw_lower_boundary),
             ),
             axis_name,
         )
-        weights_z_upper = raw_z_upper / jnp.maximum(
+        weights_z_upper = weighted_z_upper / jnp.maximum(
             face_denominator[:, None],
-            jnp.finfo(dtype).tiny,
+            tiny,
         )
-        weights_z_lower = raw_lower_boundary / jnp.maximum(
+        weights_z_lower = weighted_lower_boundary / jnp.maximum(
             face_denominator,
-            jnp.finfo(dtype).tiny,
+            tiny,
+        )
+
+        global_upper = partition_index * local_nz + jnp.arange(local_nz) + 1
+        spread_active = global_upper < grid.nz
+        spread_z_widths = jnp.where(spread_active, z_upper_widths, 0.0)
+        local_spread_minimum = jnp.min(
+            jnp.where(
+                spread_active[None, :],
+                upper_exponent,
+                jnp.inf,
+            ),
+            axis=1,
+        )
+        spread_minimum = lax.pmin(local_spread_minimum, axis_name)
+        raw_z_spread = jnp.where(
+            spread_active[None, :],
+            jnp.exp(-(upper_exponent - spread_minimum[:, None])),
+            0.0,
+        )
+        weighted_z_spread = raw_z_spread * spread_z_widths[None, :]
+        spread_denominator = lax.psum(
+            jnp.sum(weighted_z_spread, axis=1), axis_name
+        )
+        weights_z_spread = weighted_z_spread / jnp.maximum(
+            spread_denominator[:, None], tiny
         )
 
         sampled_u_local = jnp.einsum(
@@ -612,31 +731,42 @@ def build_actuator_line_kernel(
             root_loss=root_loss,
             blade_velocity=blade_velocity,
         )
-        inverse_cell_volume = 1.0 / (grid.dx * grid.dy * grid.dz)
-        source_x = inverse_cell_volume * jnp.einsum(
+        cell_volumes = (
+            z_cell_widths[:, None, None]
+            * y_widths[None, :, None]
+            * x_widths[None, None, :]
+        )
+        upper_face_volumes = (
+            jnp.where(spread_z_widths > 0.0, spread_z_widths, 1.0)[
+                :, None, None
+            ]
+            * y_widths[None, :, None]
+            * x_widths[None, None, :]
+        )
+        source_x = jnp.einsum(
             "p,pz,py,px->zyx",
             forces[:, 0],
             weights_z_cells,
             weights_y,
             weights_x,
             optimize="optimal",
-        )
-        source_y = inverse_cell_volume * jnp.einsum(
+        ) / cell_volumes
+        source_y = jnp.einsum(
             "p,pz,py,px->zyx",
             forces[:, 1],
             weights_z_cells,
             weights_y,
             weights_x,
             optimize="optimal",
-        )
-        source_z = inverse_cell_volume * jnp.einsum(
+        ) / cell_volumes
+        source_z = jnp.einsum(
             "p,pz,py,px->zyx",
             forces[:, 2],
-            weights_z_upper,
+            weights_z_spread,
             weights_y,
             weights_x,
             optimize="optimal",
-        )
+        ) / upper_face_volumes
         source_z = source_z.at[-1].set(
             jnp.where(
                 partition_index == partition_count - 1,

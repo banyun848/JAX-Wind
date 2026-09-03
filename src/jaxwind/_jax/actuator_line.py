@@ -213,9 +213,12 @@ def gaussian_weights(points, coordinates, *, smoothing_width, period=None):
     if period is not None:
         period = jnp.asarray(period, dtype=points.dtype)
         distance = jnp.mod(distance + 0.5 * period, period) - 0.5 * period
-    weights = jnp.exp(
-        -(distance / jnp.asarray(smoothing_width, dtype=points.dtype)) ** 2
-    )
+    width = jnp.asarray(smoothing_width, dtype=points.dtype)
+    if width.ndim == 1:
+        width = width[:, None]
+    exponent = (distance / width) ** 2
+    exponent = exponent - jnp.min(exponent, axis=1, keepdims=True)
+    weights = jnp.exp(-exponent)
     return weights / jnp.maximum(
         jnp.sum(weights, axis=1, keepdims=True),
         jnp.finfo(points.dtype).tiny,

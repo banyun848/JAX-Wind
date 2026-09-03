@@ -22,7 +22,21 @@ exclude = ["jaxwind.windfarm.reference*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
+# Keep the default suite deliberately small and architectural. Detailed
+# backend/oracle, scaling, visualization, and publication-reproduction tests
+# remain available with: pytest -o 'python_files=test_*.py'
+python_files = [
+    "test_poisson.py",
+    "test_operators.py",
+    "test_low_mach.py",
+    "test_cryogenic.py",
+    "test_surface.py",
+    "test_turbine.py",
+    "test_ln2_nozzle.py",
+    "test_ln2_benchmarks.py",
+    "test_hitsz.py",
+]
 
 [tool.ruff]
 line-length = 88

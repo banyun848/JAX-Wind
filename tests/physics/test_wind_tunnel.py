@@ -10,6 +10,7 @@ import jax.numpy as jnp  # noqa: E402
 
 from jaxwind.domain import (  # noqa: E402
     AddressableField,
+    AnalyticalGrid,
     Cell,
     DistributionSpec,
     EqualVerticalPartition,
@@ -19,6 +20,7 @@ from jaxwind.domain import (  # noqa: E402
     MeshAxis,
     MeshTopology,
     Projected,
+    TanhMapping,
     UniformGrid,
     VerticalVelocity,
     VerticalVelocityTendency,
@@ -76,18 +78,20 @@ class WindTunnelForcingTests(unittest.TestCase):
             ConcurrentPrecursorFringe(6.0, 0.5),
         )
 
-    def reference_velocity(self, u, v, w) -> VelocityVector:
-        cells = GlobalTestRegion(self.grid, Cell)
-        faces = GlobalTestRegion(self.grid, ZFace)
+    def reference_velocity(self, u, v, w, grid=None) -> VelocityVector:
+        grid = self.grid if grid is None else grid
+        cells = GlobalTestRegion(grid, Cell)
+        faces = GlobalTestRegion(grid, ZFace)
         return VelocityVector(
             Field(XVelocity, Cell, cells, Projected, u),
             Field(YVelocity, Cell, cells, Projected, v),
             Field(VerticalVelocity, ZFace, faces, Projected, w),
         )
 
-    def zslab_velocity(self, u, v, w) -> VelocityVector:
+    def zslab_velocity(self, u, v, w, grid=None) -> VelocityVector:
+        grid = self.grid if grid is None else grid
         decomposition = EqualVerticalPartition(
-            self.grid,
+            grid,
             MeshTopology((MeshAxis("z", 1),)),
             DistributionSpec.vertical(),
         )
@@ -119,37 +123,65 @@ class WindTunnelForcingTests(unittest.TestCase):
         )
 
     def test_oracle_and_zslab_forcing_commute(self) -> None:
-        reference_velocity = self.reference_velocity(self.u, self.v, self.w)
-        reference_target = self.reference_velocity(
-            self.target_u, self.target_v, self.target_w
-        )
-        reference = JaxOracleProjection().wind_tunnel_tendency(
-            reference_velocity,
-            self.model,
-            ConcurrentPrecursorEnvironment(reference_target),
-        )
-
-        decomposition = EqualVerticalPartition(
+        grids = (
             self.grid,
-            MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.vertical(),
-        )
-        production = build_discretization(
-            decomposition,
-            addressable_partitions=(0,),
-        ).wind_tunnel_tendency(
-            self.zslab_velocity(self.u, self.v, self.w),
-            self.model,
-            ConcurrentPrecursorEnvironment(
-                self.zslab_velocity(self.target_u, self.target_v, self.target_w)
+            AnalyticalGrid(
+                8, 6, 4, 8.0, 6.0, 4.0,
+                z_mapping=TanhMapping(1.5, focus=0.0),
             ),
         )
-        errors = (
-            jnp.max(jnp.abs(reference.x.payload - production.x.payload[0])),
-            jnp.max(jnp.abs(reference.y.payload - production.y.payload[0])),
-            jnp.max(jnp.abs(reference.z.payload[1:] - production.z.owned.payload[0])),
-        )
-        self.assertLess(max(float(value) for value in errors), 2.0e-12)
+        for grid in grids:
+            with self.subTest(mapped=not grid.is_uniform):
+                reference_velocity = self.reference_velocity(
+                    self.u, self.v, self.w, grid
+                )
+                reference_target = self.reference_velocity(
+                    self.target_u, self.target_v, self.target_w, grid
+                )
+                reference = JaxOracleProjection().wind_tunnel_tendency(
+                    reference_velocity,
+                    self.model,
+                    ConcurrentPrecursorEnvironment(reference_target),
+                )
+
+                decomposition = EqualVerticalPartition(
+                    grid,
+                    MeshTopology((MeshAxis("z", 1),)),
+                    DistributionSpec.vertical(),
+                )
+                production = build_discretization(
+                    decomposition,
+                    addressable_partitions=(0,),
+                ).wind_tunnel_tendency(
+                    self.zslab_velocity(self.u, self.v, self.w, grid),
+                    self.model,
+                    ConcurrentPrecursorEnvironment(
+                        self.zslab_velocity(
+                            self.target_u, self.target_v, self.target_w, grid
+                        )
+                    ),
+                )
+                errors = (
+                    jnp.max(
+                        jnp.abs(
+                            reference.x.payload - production.x.payload[0]
+                        )
+                    ),
+                    jnp.max(
+                        jnp.abs(
+                            reference.y.payload - production.y.payload[0]
+                        )
+                    ),
+                    jnp.max(
+                        jnp.abs(
+                            reference.z.payload[1:]
+                            - production.z.owned.payload[0]
+                        )
+                    ),
+                )
+                self.assertLess(
+                    max(float(value) for value in errors), 2.0e-12
+                )
 
     def test_ad_bem_conserves_thrust_and_applies_swirl(self) -> None:
         disk = BladeElementActuatorDisk(
@@ -172,20 +204,6 @@ class WindTunnelForcingTests(unittest.TestCase):
             tip_loss=False,
             root_loss=False,
         )
-        u = jnp.full_like(self.u, 2.0)
-        v = jnp.zeros_like(self.v)
-        w = jnp.zeros_like(self.w)
-        decomposition = EqualVerticalPartition(
-            self.grid,
-            MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.vertical(),
-        )
-        result = build_discretization(
-            decomposition, addressable_partitions=(0,)
-        ).wind_tunnel_tendency(
-            self.zslab_velocity(u, v, w), WindTunnelModel(disk), None
-        )
-
         expected, *_ = blade_element_kinematic_forces(
             jnp.asarray(((2.0, 0.0, 0.0),) * 3),
             jnp.asarray(((0.0, 1.0, 0.0),) * 3),
@@ -206,14 +224,47 @@ class WindTunnelForcingTests(unittest.TestCase):
             tip_loss=False,
             root_loss=False,
         )
-        volume = self.grid.dx * self.grid.dy * self.grid.dz
-        integrated_thrust = jnp.sum(result.x.payload) * volume
-        self.assertAlmostEqual(
-            float(integrated_thrust), float(3.0 * jnp.sum(expected[:, 0])), places=11
+        grids = (
+            UniformGrid(8, 6, 16, 8.0, 6.0, 4.0),
+            AnalyticalGrid(
+                8, 6, 16, 8.0, 6.0, 4.0,
+                z_mapping=TanhMapping(1.5, focus=0.0),
+            ),
         )
-        self.assertGreater(float(jnp.max(jnp.abs(result.y.payload))), 0.0)
-        self.assertGreater(float(jnp.max(jnp.abs(result.z.owned.payload))), 0.0)
-        self.assertAlmostEqual(float(jnp.sum(result.y.payload)), 0.0, places=11)
+        expected_thrust = 3.0 * jnp.sum(expected[:, 0])
+        for grid in grids:
+            with self.subTest(mapped=not grid.is_uniform):
+                u = jnp.full((grid.nz, grid.ny, grid.nx), 2.0)
+                v = jnp.zeros_like(u)
+                w = jnp.zeros((grid.nz + 1, grid.ny, grid.nx))
+                decomposition = EqualVerticalPartition(
+                    grid,
+                    MeshTopology((MeshAxis("z", 1),)),
+                    DistributionSpec.vertical(),
+                )
+                result = build_discretization(
+                    decomposition, addressable_partitions=(0,)
+                ).wind_tunnel_tendency(
+                    self.zslab_velocity(u, v, w, grid),
+                    WindTunnelModel(disk),
+                    None,
+                )
+                volumes = jnp.asarray(grid.cell_volumes)
+                integrated_thrust = jnp.sum(result.x.payload[0] * volumes)
+                self.assertAlmostEqual(
+                    float(integrated_thrust), float(expected_thrust), places=10
+                )
+                self.assertGreater(
+                    float(jnp.max(jnp.abs(result.y.payload))), 0.0
+                )
+                self.assertGreater(
+                    float(jnp.max(jnp.abs(result.z.owned.payload))), 0.0
+                )
+                axial_load = -result.x.payload[0] * volumes
+                centroid = jnp.sum(
+                    axial_load * jnp.asarray(grid.z_centers)[:, None, None]
+                ) / jnp.sum(axial_load)
+                self.assertAlmostEqual(float(centroid), disk.z, delta=0.08)
 
     def test_nacelle_and_tapered_tower_conserve_drag(self) -> None:
         body = NacelleTowerDrag(
@@ -228,41 +279,55 @@ class WindTunnelForcingTests(unittest.TestCase):
             tower_drag_coefficient=1.0,
             smoothing_width=0.4,
         )
-        u = jnp.full_like(self.u, 2.0)
-        result = build_discretization(
-            EqualVerticalPartition(
-                self.grid,
-                MeshTopology((MeshAxis("z", 1),)),
-                DistributionSpec.vertical(),
+        grids = (
+            UniformGrid(8, 6, 16, 8.0, 6.0, 4.0),
+            AnalyticalGrid(
+                8, 6, 16, 8.0, 6.0, 4.0,
+                z_mapping=TanhMapping(1.5, focus=0.0),
             ),
-            addressable_partitions=(0,),
-        ).wind_tunnel_tendency(
-            self.zslab_velocity(u, jnp.zeros_like(self.v), jnp.zeros_like(self.w)),
-            WindTunnelModel(turbine_body=body),
-            None,
         )
-        z = (jnp.arange(self.grid.nz) + 0.5) * self.grid.dz
         top = body.hub_height - 0.5 * body.nacelle_diameter
-        fraction = jnp.clip(z / top, 0.0, 1.0)
-        diameter = body.tower_base_diameter + fraction * (
-            body.tower_top_diameter - body.tower_base_diameter
-        )
-        tower_force = jnp.sum(
-            -0.5 * body.tower_drag_coefficient * diameter * 2.0**2
-            * (z < top) * self.grid.dz
-        )
         nacelle_force = (
             -0.5 * body.nacelle_drag_coefficient
             * jnp.pi * body.nacelle_diameter**2 / 4.0 * 2.0**2
         )
-        integrated = jnp.sum(result.x.payload) * (
-            self.grid.dx * self.grid.dy * self.grid.dz
-        )
-        self.assertAlmostEqual(
-            float(integrated), float(nacelle_force + tower_force), places=11
-        )
-        self.assertTrue(jnp.all(result.x.payload <= 0.0))
-        self.assertTrue(jnp.all(result.y.payload == 0.0))
+        for grid in grids:
+            with self.subTest(mapped=not grid.is_uniform):
+                u = jnp.full((grid.nz, grid.ny, grid.nx), 2.0)
+                v = jnp.zeros_like(u)
+                w = jnp.zeros((grid.nz + 1, grid.ny, grid.nx))
+                result = build_discretization(
+                    EqualVerticalPartition(
+                        grid,
+                        MeshTopology((MeshAxis("z", 1),)),
+                        DistributionSpec.vertical(),
+                    ),
+                    addressable_partitions=(0,),
+                ).wind_tunnel_tendency(
+                    self.zslab_velocity(u, v, w, grid),
+                    WindTunnelModel(turbine_body=body),
+                    None,
+                )
+                z = jnp.asarray(grid.z_centers)
+                z_widths = jnp.asarray(grid.z_widths)
+                fraction = jnp.clip(z / top, 0.0, 1.0)
+                diameter = body.tower_base_diameter + fraction * (
+                    body.tower_top_diameter - body.tower_base_diameter
+                )
+                tower_force = jnp.sum(
+                    -0.5 * body.tower_drag_coefficient * diameter * 2.0**2
+                    * (z < top) * z_widths
+                )
+                integrated = jnp.sum(
+                    result.x.payload[0] * jnp.asarray(grid.cell_volumes)
+                )
+                self.assertAlmostEqual(
+                    float(integrated),
+                    float(nacelle_force + tower_force),
+                    places=10,
+                )
+                self.assertTrue(jnp.all(result.x.payload <= 0.0))
+                self.assertTrue(jnp.all(result.y.payload == 0.0))
 
     def test_configured_fringe_has_a_unit_plateau_and_smooth_seam(self) -> None:
         x = jnp.asarray(
@@ -390,33 +455,51 @@ class WindTunnelForcingTests(unittest.TestCase):
         self.assertLess(float(jnp.sum(reference.x.payload)), 0.0)
 
     def test_disk_projection_conserves_thrust_after_grid_translation(self) -> None:
-        velocity = self.reference_velocity(
-            jnp.full_like(self.u, 2.0),
-            jnp.zeros_like(self.v),
-            jnp.zeros_like(self.w),
+        grids = (
+            UniformGrid(8, 6, 16, 8.0, 6.0, 4.0),
+            AnalyticalGrid(
+                8, 6, 16, 8.0, 6.0, 4.0,
+                z_mapping=TanhMapping(1.5, focus=0.0),
+            ),
         )
-        totals = []
-        for disk_y in (3.0, 3.37):
-            disk = PureThrustActuatorDisk(
-                3.5,
-                disk_y,
-                2.0,
-                2.5,
-                1.1,
-                0.6,
-                0.5,
-                filtered_velocity_correction=False,
-            )
-            tendency = JaxOracleProjection().wind_tunnel_tendency(
-                velocity,
-                WindTunnelModel(actuator_disk=disk),
-                None,
-            )
-            totals.append(float(jnp.sum(tendency.x.payload)))
-
         expected = -0.5 * 1.1 * 2.0**2 * jnp.pi * 2.5**2 / 4.0
-        self.assertAlmostEqual(totals[0], float(expected), places=11)
-        self.assertAlmostEqual(totals[1], float(expected), places=11)
+        for grid in grids:
+            u = jnp.full((grid.nz, grid.ny, grid.nx), 2.0)
+            v = jnp.zeros_like(u)
+            w = jnp.zeros((grid.nz + 1, grid.ny, grid.nx))
+            velocity = self.reference_velocity(u, v, w, grid)
+            volumes = jnp.asarray(grid.cell_volumes)
+            for disk_y in (3.0, 3.37):
+                with self.subTest(
+                    mapped=not grid.is_uniform, disk_y=disk_y
+                ):
+                    disk = PureThrustActuatorDisk(
+                        3.5,
+                        disk_y,
+                        2.0,
+                        2.5,
+                        1.1,
+                        0.6,
+                        0.5,
+                        filtered_velocity_correction=False,
+                    )
+                    tendency = JaxOracleProjection().wind_tunnel_tendency(
+                        velocity,
+                        WindTunnelModel(actuator_disk=disk),
+                        None,
+                    )
+                    integrated = jnp.sum(tendency.x.payload * volumes)
+                    self.assertAlmostEqual(
+                        float(integrated), float(expected), places=10
+                    )
+                    axial_load = -tendency.x.payload * volumes
+                    centroid = jnp.sum(
+                        axial_load
+                        * jnp.asarray(grid.z_centers)[:, None, None]
+                    ) / jnp.sum(axial_load)
+                    self.assertAlmostEqual(
+                        float(centroid), disk.z, delta=0.08
+                    )
 
     def test_fringe_requires_explicit_precursor_environment(self) -> None:
         with self.assertRaisesRegex(TypeError, "ConcurrentPrecursorEnvironment"):

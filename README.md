@@ -26,6 +26,16 @@ python -m pip install -e .
 Install the JAX build appropriate for the CPU or accelerator on the target
 machine.
 
+The default `pytest` collection is a curated core suite of fewer than 50
+solver and active LN₂/wind-farm contracts. Publication reproductions,
+multi-process checks, backend-specific oracles, and visualization tests are
+kept as an opt-in extended suite:
+
+```bash
+pytest
+pytest -o 'python_files=test_*.py'
+```
+
 ## Run the pressure-driven LASD case
 
 Validate and display the resolved case without importing JAX:
@@ -134,6 +144,42 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
   python -m applications.fv_abl cases/Andren1994/config.toml \
   --max-steps 10 --overwrite
 ```
+
+The FV core also provides an opt-in variable-density low-Mach formulation.
+`IdealGasMixture` evaluates thermodynamic density from temperature, a scalar
+or hydrostatic base-state pressure field, and
+transported gas mass fractions, `conservative_specific_tendency` advances a
+density-weighted scalar inventory, and `project_low_mach` corrects face
+momentum so that
+`(rho_new-rho_old)/dt + div(rho*u) = mass_source` holds discretely. Because
+the correction is applied to momentum, this conservative formulation reuses
+the scalable FFT/GMG pressure operators. The HITSZ LN2 runner uses this path;
+the ABL runners remain backward-compatible constant-density/Boussinesq cases.
+
+The FV mesh can also be a separable analytical mapping. `AnalyticalGrid` samples
+user callables in normalized computational space before JAX tracing; built-in
+`TanhMapping` and `SinhMapping` cover smooth clustering. For example, the
+HITSZ inlet mesh uses `TanhMapping(2.2, focus=0.0)` in x and central tanh
+branches on the nozzle y-z axis. Fluxes, SGS widths, wall sources, parcels,
+scalars, and pressure projection use local cell widths/volumes. Mapped meshes
+use GMG or AMG because an FFT direction must remain uniform.
+
+The source-driven DLR IN-1 benchmark uses the measured PDA profile at
+`y/D=5` as an axisymmetric parcel source and reserves all 83 signed points at
+`y/D=10..70` for downstream validation of D10, axial velocity, and radial
+velocity. The 256³ case runs a 10 ms local-flow-through spin-up followed by
+10 ms of statistics and writes both a quantitative report and 100
+visualization frames:
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.dlr_in1 cases/DLRIN1/fv_256_source.toml
+python -m applications.dlr_in1.plot_comparison \
+  outputs/dlr_in1/fv_256_source/benchmark_validation.json
+```
+
+See `cases/DLRIN1/README.md` for source-data provenance and the documented
+triple-point closure required by the experiment's 7.3 kPa backpressure.
 
 For open-streamwise calculations, the FV application also provides a
 configuration-driven warmup/precursor/main workflow. It develops and records

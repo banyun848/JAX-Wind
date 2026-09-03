@@ -54,6 +54,17 @@ tables are reproducible raster readings, not the authors' original XFOIL
 output; see `reference/hitsz001_polar_digitized.csv` and
 `reference/blade_geometry_digitized.csv`.
 
+The FV workflow also accepts `model = "hitsz-r9-alm"`. This uses the same
+three-blade geometry, digitized polars, prescribed RPM, and Prandtl losses, but
+samples and deposits the 24 elements on each instantaneous rotating blade.
+`initial_azimuth_degrees` is optional (default `0`); the ALM does not require
+`smearing_azimuthal_elements`. Set `smoothing_width_chord_factor` to use one
+Gaussian width per radial element (for example, `0.5` gives `epsilon=0.5c`).
+Gaussian weights are normalized with physical
+cell and face volumes, so line loads are conserved on analytically mapped
+meshes as well as uniform meshes. `openfast-alm` provides the corresponding
+path for an OpenFAST rotor.
+
 The paper reports the 40 mm tower diameter. Its nacelle dimensions are not
 tabulated; the `0.18 × 0.05 m` nacelle is a documented 1:100 geometric model
 assumption and is kept separate from the measured rotor geometry.

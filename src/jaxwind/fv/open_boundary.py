@@ -6,13 +6,16 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 from .state import (
+    FREE_SLIP,
     OPEN,
+    PERIODIC,
     Boundaries,
     StaggeredVelocity,
     enforce_impermeability,
+    spanwise_is_periodic,
     streamwise_is_periodic,
     validate,
 )
@@ -27,7 +30,7 @@ class InflowPlane(NamedTuple):
     scalar: jnp.ndarray
 
 
-def extract_inflow_plane(solution, grid: UniformGrid, plane: int = 0) -> InflowPlane:
+def extract_inflow_plane(solution, grid: Grid, plane: int = 0) -> InflowPlane:
     """Extract exactly one streamwise layer from a periodic FV solution."""
     if not 0 <= plane < grid.nx:
         raise ValueError("the precursor inflow plane is outside the mesh")
@@ -41,11 +44,16 @@ def extract_inflow_plane(solution, grid: UniformGrid, plane: int = 0) -> InflowP
     )
 
 
-def validate_inflow_plane(plane: InflowPlane, grid: UniformGrid) -> None:
+def validate_inflow_plane(
+    plane: InflowPlane,
+    grid: Grid,
+    *,
+    wall_y: bool = False,
+) -> None:
     """Validate the staggered yz shapes of a recorded layer."""
     expected = {
         "x_velocity": (grid.nz, grid.ny),
-        "y_velocity": (grid.nz, grid.ny),
+        "y_velocity": (grid.nz, grid.ny + 1 if wall_y else grid.ny),
         "z_velocity": (grid.nz + 1, grid.ny),
         "scalar": (grid.nz, grid.ny),
     }
@@ -64,7 +72,7 @@ def _second_order_outflow(field: jnp.ndarray) -> jnp.ndarray:
 
 def periodic_to_open_velocity(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
 ) -> StaggeredVelocity:
     """Give a periodic MAC field distinct inlet and outlet x faces."""
     if not streamwise_is_periodic(velocity, grid):
@@ -74,20 +82,23 @@ def periodic_to_open_velocity(
         velocity.y,
         velocity.z,
     )
-    validate(opened, grid, Boundaries(streamwise=OPEN))
+    spanwise = FREE_SLIP if not spanwise_is_periodic(velocity, grid) else PERIODIC
+    validate(opened, grid, Boundaries(streamwise=OPEN, spanwise=spanwise))
     return opened
 
 
 def enforce_open_velocity(
     velocity: StaggeredVelocity,
     plane: InflowPlane,
-    grid: UniformGrid,
+    grid: Grid,
     *,
     extrapolate_normal_outflow: bool = True,
 ) -> StaggeredVelocity:
     """Overwrite one inlet layer and apply second-order outlet extrapolation."""
-    validate_inflow_plane(plane, grid)
-    validate(velocity, grid, Boundaries(streamwise=OPEN))
+    wall_y = not spanwise_is_periodic(velocity, grid)
+    validate_inflow_plane(plane, grid, wall_y=wall_y)
+    spanwise = FREE_SLIP if wall_y else PERIODIC
+    validate(velocity, grid, Boundaries(streamwise=OPEN, spanwise=spanwise))
     x_velocity = velocity.x.at[..., 0].set(plane.x_velocity)
     y_velocity = velocity.y.at[..., 0].set(plane.y_velocity)
     z_velocity = velocity.z.at[..., 0].set(plane.z_velocity)
@@ -104,10 +115,10 @@ def enforce_open_velocity(
 def enforce_open_scalar(
     scalar: jnp.ndarray,
     plane: InflowPlane,
-    grid: UniformGrid,
+    grid: Grid,
 ) -> jnp.ndarray:
     """Overwrite the scalar inlet layer and extrapolate its outlet layer."""
-    validate_inflow_plane(plane, grid)
+    validate_inflow_plane(plane, grid, wall_y=plane.y_velocity.shape[1] == grid.ny + 1)
     expected = (grid.nz, grid.ny, grid.nx)
     if scalar.shape != expected:
         raise ValueError(f"scalar must have shape {expected}")

@@ -47,7 +47,7 @@ import math
 
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 from .state import FREE_SLIP, Boundaries, StaggeredVelocity, Wall
 
@@ -84,13 +84,13 @@ class MoninObukhovWall:
         if self.averaging not in (LOCAL, PLANAR):
             raise ValueError(f"unsupported averaging: {self.averaging!r}")
 
-    def reference_height(self, grid: UniformGrid) -> float:
+    def reference_height(self, grid: Grid) -> float:
         """Height inside the first cell at which the law is evaluated."""
         if self.sampling == CELL_AVERAGE:
-            return grid.dz / math.e
-        return 0.5 * grid.dz
+            return float(grid.z_widths[0]) / math.e
+        return 0.5 * float(grid.z_widths[0])
 
-    def drag_coefficient(self, grid: UniformGrid) -> float:
+    def drag_coefficient(self, grid: Grid) -> float:
         """The factor relating ``U * (u, v)`` to the surface stress."""
         height = self.reference_height(grid)
         if height <= self.roughness:
@@ -112,14 +112,18 @@ def _first_level_speed(
         if x_velocity.shape[-1] == y_velocity.shape[-1] + 1
         else 0.5 * (x_velocity + jnp.roll(x_velocity, -1, axis=1))
     )
-    centred_y = 0.5 * (y_velocity + jnp.roll(y_velocity, -1, axis=0))
-    speed = jnp.sqrt(centred_x**2 + centred_y**2)
+    centred_y = (
+        0.5 * (y_velocity[:-1] + y_velocity[1:])
+        if y_velocity.shape[0] == x_velocity.shape[0] + 1
+        else 0.5 * (y_velocity + jnp.roll(y_velocity, -1, axis=0))
+    )
+    speed = jnp.sqrt(centred_x**2 + centred_y**2 + 1.0e-20)
     return centred_x, centred_y, speed
 
 
 def surface_stress(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
     model: MoninObukhovWall,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return the surface stress on the x-faces and the y-faces.
@@ -142,15 +146,88 @@ def surface_stress(
         )
     else:
         stress_x_faces = 0.5 * (stress_x + jnp.roll(stress_x, 1, axis=1))
-    return (
-        stress_x_faces,
-        0.5 * (stress_y + jnp.roll(stress_y, 1, axis=0)),
+    if velocity.y.shape[1] == stress_y.shape[0] + 1:
+        interior_y = 0.5 * (stress_y[:-1] + stress_y[1:])
+        side = jnp.zeros_like(stress_y[:1])
+        stress_y_faces = jnp.concatenate((side, interior_y, side), axis=0)
+    else:
+        stress_y_faces = 0.5 * (stress_y + jnp.roll(stress_y, 1, axis=0))
+    return stress_x_faces, stress_y_faces
+
+
+def _side_plane_stress(
+    u: jnp.ndarray,
+    w: jnp.ndarray,
+    cell_width: float,
+    model: MoninObukhovWall,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Tangential stress on one y wall at z-x cell centres."""
+    speed = jnp.sqrt(u**2 + w**2 + 1.0e-20)
+    if model.averaging == PLANAR:
+        speed = jnp.mean(speed)
+    height = cell_width / math.e if model.sampling == CELL_AVERAGE else 0.5 * cell_width
+    if height <= model.roughness:
+        raise ValueError("the first side-wall cell is below the roughness length")
+    coefficient = (model.von_karman / math.log(height / model.roughness)) ** 2
+    return coefficient * speed * u, coefficient * speed * w
+
+
+def sidewall_stress(
+    velocity: StaggeredVelocity,
+    grid: Grid,
+    model: MoninObukhovWall,
+) -> tuple[tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+    """Return lower/upper y-wall stresses for tangential u and w."""
+    if velocity.y.shape[1] != grid.ny + 1:
+        raise ValueError("side-wall stress requires distinct y boundary faces")
+    u_cells = (
+        0.5 * (velocity.x[..., :-1] + velocity.x[..., 1:])
+        if velocity.x.shape[-1] == grid.nx + 1
+        else 0.5 * (velocity.x + jnp.roll(velocity.x, -1, axis=2))
     )
+    w_cells = 0.5 * (velocity.z[:-1] + velocity.z[1:])
+    return (
+        _side_plane_stress(
+            u_cells[:, 0], w_cells[:, 0], float(grid.y_widths[0]), model
+        ),
+        _side_plane_stress(
+            u_cells[:, -1], w_cells[:, -1], float(grid.y_widths[-1]), model
+        ),
+    )
+
+
+def sidewall_tendency(
+    velocity: StaggeredVelocity,
+    grid: Grid,
+    model: MoninObukhovWall,
+) -> StaggeredVelocity:
+    """Apply log-law drag in cells adjacent to both y side walls."""
+    lower, upper = sidewall_stress(velocity, grid, model)
+    lower_u, lower_w = lower
+    upper_u, upper_w = upper
+    if velocity.x.shape[-1] == grid.nx + 1:
+        def x_faces(stress):
+            interior = 0.5 * (stress[..., :-1] + stress[..., 1:])
+            return jnp.concatenate((stress[..., :1], interior, stress[..., -1:]), axis=1)
+    else:
+        def x_faces(stress):
+            return 0.5 * (stress + jnp.roll(stress, 1, axis=1))
+    def z_faces(stress):
+        interior = 0.5 * (stress[:-1] + stress[1:])
+        wall = jnp.zeros_like(stress[:1])
+        return jnp.concatenate((wall, interior, wall), axis=0)
+    x = jnp.zeros_like(velocity.x)
+    x = x.at[:, 0].add(-x_faces(lower_u) / float(grid.y_widths[0]))
+    x = x.at[:, -1].add(-x_faces(upper_u) / float(grid.y_widths[-1]))
+    z = jnp.zeros_like(velocity.z)
+    z = z.at[:, 0].add(-z_faces(lower_w) / float(grid.y_widths[0]))
+    z = z.at[:, -1].add(-z_faces(upper_w) / float(grid.y_widths[-1]))
+    return StaggeredVelocity(x, jnp.zeros_like(velocity.y), z)
 
 
 def friction_velocity(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
     model: MoninObukhovWall,
 ) -> jnp.ndarray:
     """Planar-averaged friction velocity implied by the surface stress."""
@@ -162,7 +239,7 @@ def friction_velocity(
 
 def wall_tendency(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
     model: MoninObukhovWall,
 ) -> StaggeredVelocity:
     """Momentum tendency from the surface drag on the wall-adjacent cells.
@@ -171,8 +248,12 @@ def wall_tendency(
     volume, so it reaches only that cell, divided by the cell height.
     """
     stress_x, stress_y = surface_stress(velocity, grid, model)
-    x_tendency = jnp.zeros_like(velocity.x).at[0].set(-stress_x / grid.dz)
-    y_tendency = jnp.zeros_like(velocity.y).at[0].set(-stress_y / grid.dz)
+    x_tendency = jnp.zeros_like(velocity.x).at[0].set(
+        -stress_x / float(grid.z_widths[0])
+    )
+    y_tendency = jnp.zeros_like(velocity.y).at[0].set(
+        -stress_y / float(grid.z_widths[0])
+    )
     return StaggeredVelocity(
         x_tendency,
         y_tendency,
@@ -181,7 +262,7 @@ def wall_tendency(
 
 
 def logarithmic_profile(
-    grid: UniformGrid,
+    grid: Grid,
     friction: float,
     model: MoninObukhovWall,
 ) -> jnp.ndarray:
@@ -191,8 +272,8 @@ def logarithmic_profile(
     that the profile is the exact discrete equilibrium of a finite-volume
     solver using ``CELL_AVERAGE`` sampling.
     """
-    upper = (jnp.arange(grid.nz) + 1.0) * grid.dz
-    lower = jnp.arange(grid.nz) * grid.dz
+    upper = jnp.asarray(grid.z_faces[1:])
+    lower = jnp.asarray(grid.z_faces[:-1])
     roughness = model.roughness
 
     def integral(height):
@@ -204,7 +285,7 @@ def logarithmic_profile(
         safe = jnp.where(positive, height, 1.0)
         return jnp.where(positive, safe * (jnp.log(safe / roughness) - 1.0), 0.0)
 
-    averaged = (integral(upper) - integral(lower)) / grid.dz
+    averaged = (integral(upper) - integral(lower)) / jnp.asarray(grid.z_widths)
     return friction / model.von_karman * jnp.maximum(averaged, 0.0)
 
 
@@ -226,6 +307,8 @@ __all__ = [
     "friction_velocity",
     "logarithmic_profile",
     "monin_obukhov_boundaries",
+    "sidewall_stress",
+    "sidewall_tendency",
     "surface_stress",
     "wall_tendency",
 ]

@@ -27,10 +27,12 @@ class FiniteVolumeOptions:
     chunk_steps: int
     spectrum_diagnostic: str
     output_directory: Path
+    scalar_advection_scheme: str = "central"
     cfl_ceiling: float | None = None
     gmg_tolerance: float | None = None
     gmg_presweeps: int = 2
     gmg_postsweeps: int = 2
+    gmg_anisotropy_aware: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +99,8 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
         "gmg_tolerance",
         "gmg_presweeps",
         "gmg_postsweeps",
+        "gmg_anisotropy_aware",
+        "scalar_advection_scheme",
     }
     unknown = table.keys() - expected - optional
     if missing:
@@ -135,6 +139,11 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
             "spectrum_diagnostic",
         ),
         output_directory=Path(output_directory),
+        scalar_advection_scheme=_choice(
+            table.get("scalar_advection_scheme", "central"),
+            {"central", "upwind"},
+            "scalar_advection_scheme",
+        ),
         cfl_ceiling=(
             _positive_number(table, "cfl_ceiling")
             if "cfl_ceiling" in table
@@ -155,7 +164,14 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
             if "gmg_postsweeps" in table
             else 2
         ),
+        gmg_anisotropy_aware=table.get(
+            "gmg_anisotropy_aware", True
+        ),
     )
+    if not isinstance(options.gmg_anisotropy_aware, bool):
+        raise ValueError(
+            "finite_volume.gmg_anisotropy_aware must be boolean"
+        )
     return FiniteVolumeCase(load_abl(source), options, source)
 
 

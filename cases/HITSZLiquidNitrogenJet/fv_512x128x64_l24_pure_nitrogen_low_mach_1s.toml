@@ -1,0 +1,71 @@
+[case]
+name = "HITSZ fully flashed pure-nitrogen subgrid jet, low-Mach FV 512x128x64"
+
+[domain]
+cells = [512, 128, 64]
+lengths_m = [24.0, 6.0, 3.6]
+# Quiescent ambient inlet at x=0, pressure outlet at x=24 m.
+# The nozzle is an embedded volume source at the former nacelle location.
+
+[time]
+dt_seconds = 0.0025
+steps = 400
+chunk_steps = 4
+checkpoint_every_steps = 400
+
+[ambient]
+temperature_k = 300.0
+relative_humidity = 0.80
+water_vapor_mixing_ratio = 0.017996758222579956
+pressure_pa = 101325.0
+density_kg_m3 = 1.225
+dry_air_density_kg_m3 = 1.225
+heat_capacity_j_kg_k = 1005.0
+gas_constant_j_kg_k = 287.05
+kinematic_viscosity_m2_s = 1.5e-5
+scalar_diffusivity_m2_s = 2.2e-5
+gravity_m_s2 = [0.0, 0.0, -9.81]
+
+[walls]
+roughness_length_m = 1.6100320416141182e-5
+
+[source]
+mode = "volume"
+# The nozzle exits as liquid (quality zero), then all remaining liquid flashes
+# into nitrogen vapour inside the normalized grid-scale source kernel.
+fully_vaporized_within_source_cell = true
+
+[jet]
+position_m = [6.3, 3.0, 0.876]
+radius_m = 0.001
+speed_m_s = 4.9358940805812895
+mass_flow_rate_kg_s = 0.0125
+vapor_quality = 0.0
+temperature_k = 77.34
+liquid_density_kg_m3 = 806.11
+liquid_latent_heat_j_kg = 199180.0
+ramp_time_seconds = 0.02
+# Parcel storage is inactive for the fully flashed source; valid minimal values
+# retain backward compatibility with the common jet schema.
+initial_diameter_m = 150.0e-6
+minimum_diameter_m = 50.0e-6
+maximum_diameter_m = 300.0e-6
+rosin_rammler_spread = 3.0
+parcels_per_step = 1
+maximum_parcels = 8
+parcel_substeps = 1
+cone_half_angle_degrees = 0.0
+
+[numerics]
+flow_formulation = "low-mach"
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 2
+gmg_postsweeps = 2
+momentum_closure = "amd"
+scalar_advection_scheme = "upwind"
+time_integration = "rk3"
+dtype = "float32"
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_512x128x64_l24_pure_nitrogen_low_mach_1s"

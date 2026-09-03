@@ -13,6 +13,7 @@ from jaxwind.domain import UniformGrid
 from jaxwind.fv import (
     FREE_SLIP,
     AnisotropicMinimumDissipation,
+    StaticSmagorinsky,
     Boundaries,
     FlowModel,
     StaggeredVelocity,
@@ -121,6 +122,20 @@ class EddyViscosityTest(unittest.TestCase):
     def test_rejects_a_non_positive_constant(self) -> None:
         with self.assertRaises(ValueError):
             AnisotropicMinimumDissipation(0.0)
+
+    def test_classical_smagorinsky_scales_with_coefficient_squared(self) -> None:
+        velocity = turbulent_velocity(self.grid, 9)
+        base = eddy_viscosity(
+            velocity, self.grid, WALLS, StaticSmagorinsky(0.08)
+        )
+        doubled = eddy_viscosity(
+            velocity, self.grid, WALLS, StaticSmagorinsky(0.16)
+        )
+        self.assertGreater(float(jnp.max(base)), 0.0)
+        self.assertLess(
+            float(jnp.max(jnp.abs(doubled - 4.0 * base))),
+            1.0e-12 * float(jnp.max(base)),
+        )
 
 
 class SubfilterStressTest(unittest.TestCase):

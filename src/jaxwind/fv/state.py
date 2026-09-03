@@ -4,8 +4,8 @@ The layout is z-first to match the rest of the code base:
 
 * ``u`` lives on x-faces, shape ``(nz, ny, nx)``; index ``i`` is the face at
   ``x = i * dx``, between cells ``i - 1`` and ``i`` (periodic in x).
-* ``v`` lives on y-faces, shape ``(nz, ny, nx)``; index ``j`` is the face at
-  ``y = j * dy`` (periodic in y).
+* ``v`` lives on y-faces. It has shape ``(nz, ny, nx)`` for periodic y and
+  ``(nz, ny + 1, nx)`` when physical side walls are represented.
 * ``w`` lives on z-faces, shape ``(nz + 1, ny, nx)``; levels ``0`` and ``nz``
   are the physical walls and are always zero.
 * pressure lives at cell centres, shape ``(nz, ny, nx)``.
@@ -22,7 +22,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain.grid import Grid
 
 
 NO_SLIP = "no-slip"
@@ -66,30 +66,41 @@ class Boundaries:
     lower: Wall = Wall()
     upper: Wall = Wall()
     streamwise: str = PERIODIC
+    spanwise: str = PERIODIC
 
     def __post_init__(self) -> None:
         if self.streamwise not in (PERIODIC, OPEN):
             raise ValueError(f"unsupported streamwise boundary: {self.streamwise!r}")
+        if self.spanwise not in (PERIODIC, FREE_SLIP):
+            raise ValueError(f"unsupported spanwise boundary: {self.spanwise!r}")
 
 
-def cell_shape(grid: UniformGrid) -> tuple[int, int, int]:
+def cell_shape(grid: Grid) -> tuple[int, int, int]:
     return (grid.nz, grid.ny, grid.nx)
 
 
-def z_face_shape(grid: UniformGrid) -> tuple[int, int, int]:
+def z_face_shape(grid: Grid) -> tuple[int, int, int]:
     return (grid.nz + 1, grid.ny, grid.nx)
 
 
 def x_face_shape(
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries = Boundaries(),
 ) -> tuple[int, int, int]:
     count = grid.nx if boundaries.streamwise == PERIODIC else grid.nx + 1
     return (grid.nz, grid.ny, count)
 
 
+def y_face_shape(
+    grid: Grid,
+    boundaries: Boundaries = Boundaries(),
+) -> tuple[int, int, int]:
+    count = grid.ny if boundaries.spanwise == PERIODIC else grid.ny + 1
+    return (grid.nz, count, grid.nx)
+
+
 def zeros(
-    grid: UniformGrid,
+    grid: Grid,
     dtype: str = "float64",
     boundaries: Boundaries = Boundaries(),
 ) -> StaggeredVelocity:
@@ -97,29 +108,30 @@ def zeros(
     resolved = jnp.zeros((), dtype=jnp.dtype(dtype)).dtype
     return StaggeredVelocity(
         jnp.zeros(x_face_shape(grid, boundaries), resolved),
-        jnp.zeros(cell_shape(grid), resolved),
+        jnp.zeros(y_face_shape(grid, boundaries), resolved),
         jnp.zeros(z_face_shape(grid), resolved),
     )
 
 
 def validate(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
     boundaries: Boundaries = Boundaries(),
 ) -> None:
     """Raise when a velocity does not match the staggered layout."""
     expected_x = x_face_shape(grid, boundaries)
     if velocity.x.shape != expected_x:
         raise ValueError(f"u must have shape {expected_x}")
-    if velocity.y.shape != cell_shape(grid):
-        raise ValueError(f"v must have shape {cell_shape(grid)}")
+    expected_y = y_face_shape(grid, boundaries)
+    if velocity.y.shape != expected_y:
+        raise ValueError(f"v must have shape {expected_y}")
     if velocity.z.shape != z_face_shape(grid):
         raise ValueError(f"w must have shape {z_face_shape(grid)}")
 
 
 def streamwise_is_periodic(
     velocity: StaggeredVelocity,
-    grid: UniformGrid,
+    grid: Grid,
 ) -> bool:
     """Infer the static streamwise topology from the x-face count."""
     if velocity.x.shape[-1] == grid.nx:
@@ -129,27 +141,42 @@ def streamwise_is_periodic(
     raise ValueError("u must carry nx periodic faces or nx + 1 open faces")
 
 
+def spanwise_is_periodic(
+    velocity: StaggeredVelocity,
+    grid: Grid,
+) -> bool:
+    """Infer the static spanwise topology from the y-face count."""
+    if velocity.y.shape[1] == grid.ny:
+        return True
+    if velocity.y.shape[1] == grid.ny + 1:
+        return False
+    raise ValueError("v must carry ny periodic faces or ny + 1 wall faces")
+
+
 def enforce_impermeability(velocity: StaggeredVelocity) -> StaggeredVelocity:
-    """Zero the normal velocity on both walls."""
+    """Zero normal velocity on z walls and on represented y side walls."""
     z_velocity = velocity.z.at[0].set(0.0).at[-1].set(0.0)
-    return StaggeredVelocity(velocity.x, velocity.y, z_velocity)
+    y_velocity = velocity.y
+    if velocity.y.shape[1] != velocity.x.shape[1]:
+        y_velocity = y_velocity.at[:, 0].set(0.0).at[:, -1].set(0.0)
+    return StaggeredVelocity(velocity.x, y_velocity, z_velocity)
 
 
-def face_coordinates(grid: UniformGrid) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def face_coordinates(grid: Grid) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Return the 1-D x-face, y-face and z-face coordinates."""
     return (
-        jnp.arange(grid.nx) * grid.dx,
-        jnp.arange(grid.ny) * grid.dy,
-        jnp.arange(grid.nz + 1) * grid.dz,
+        jnp.asarray(grid.x_faces[:-1]),
+        jnp.asarray(grid.y_faces[:-1]),
+        jnp.asarray(grid.z_faces),
     )
 
 
-def cell_coordinates(grid: UniformGrid) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def cell_coordinates(grid: Grid) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Return the 1-D cell-centre coordinates."""
     return (
-        (jnp.arange(grid.nx) + 0.5) * grid.dx,
-        (jnp.arange(grid.ny) + 0.5) * grid.dy,
-        (jnp.arange(grid.nz) + 0.5) * grid.dz,
+        jnp.asarray(grid.x_centers),
+        jnp.asarray(grid.y_centers),
+        jnp.asarray(grid.z_centers),
     )
 
 
@@ -165,9 +192,11 @@ __all__ = [
     "cell_shape",
     "enforce_impermeability",
     "face_coordinates",
+    "spanwise_is_periodic",
     "streamwise_is_periodic",
     "validate",
     "x_face_shape",
+    "y_face_shape",
     "z_face_shape",
     "zeros",
 ]

@@ -1,4 +1,4 @@
-"""A staggered-mesh finite-volume incompressible solver with a pressure solve.
+"""Staggered finite-volume incompressible and variable-density low-Mach flow.
 
 The discretisation is the classical marker-and-cell arrangement on a uniform
 Cartesian box: periodic in x and y, impermeable walls in z.  Its discrete
@@ -9,6 +9,11 @@ JAX-native,
 matrix-free geometric multigrid V-cycle built straight from the mesh, also
 preconditioning conjugate gradients; or ``fft``, a direct diagonalisation
 that is exact but only valid because of the periodic horizontal boundary.
+
+The opt-in :mod:`jaxwind.fv.low_mach` path obtains thermodynamic density from
+a constant-pressure mixture EOS and projects face momentum to satisfy total
+mass conservation. Existing constant-density cases retain their original
+velocity projection.
 """
 
 from .abl import (
@@ -19,6 +24,12 @@ from .abl import (
     initial_atmospheric_solution,
 )
 from .buoyancy import LinearBoussinesqBuoyancy, boussinesq_tendency
+from .cooling import (
+    SubgridCooling,
+    SubgridSpray,
+    build_subgrid_cooling_source,
+    build_subgrid_spray_sources,
+)
 from .diagnostics import (
     atmospheric_history_diagnostics,
     atmospheric_profile_diagnostics,
@@ -31,6 +42,17 @@ from .integrate import (
     build_step,
     build_tendency,
     initial_solution,
+)
+from .low_mach import (
+    IdealGasMixture,
+    cell_to_faces,
+    conservative_specific_tendency,
+    continuity_residual,
+    dilatation_correction,
+    face_density,
+    mass_flux,
+    mixing_ratio_to_mass_fraction,
+    project_low_mach,
 )
 from .open_abl import build_open_atmospheric_run, build_open_atmospheric_step
 from .open_boundary import (
@@ -69,6 +91,7 @@ from .rotation import CoriolisGeostrophic, coriolis_tendency
 from .scalar import PassiveScalar, scalar_tendency
 from .sgs import (
     AnisotropicMinimumDissipation,
+    StaticSmagorinsky,
     eddy_viscosity,
     edge_gradients,
     stress_divergence,
@@ -80,7 +103,7 @@ from .surface import (
     coupled_surface_exchange,
     surface_momentum_tendency,
 )
-from .turbine import build_adbem_forcing
+from .turbine import build_adbem_forcing, build_actuator_line_forcing
 from .sponge import (
     PLANE_MEAN,
     REST,
@@ -95,6 +118,8 @@ from .wall import (
     friction_velocity,
     logarithmic_profile,
     monin_obukhov_boundaries,
+    sidewall_stress,
+    sidewall_tendency,
     surface_stress,
     wall_tendency,
 )
@@ -110,9 +135,11 @@ from .state import (
     cell_shape,
     enforce_impermeability,
     face_coordinates,
+    spanwise_is_periodic,
     streamwise_is_periodic,
     validate,
     x_face_shape,
+    y_face_shape,
     z_face_shape,
     zeros,
 )
@@ -126,6 +153,7 @@ __all__ = [
     "LinearBoussinesqBuoyancy",
     "PLANAR",
     "AnisotropicMinimumDissipation",
+    "StaticSmagorinsky",
     "AtmosphericSolution",
     "CoriolisGeostrophic",
     "MoninObukhovSurface",
@@ -134,6 +162,7 @@ __all__ = [
     "OPEN",
     "PERIODIC",
     "InflowPlane",
+    "IdealGasMixture",
     "PLANE_MEAN",
     "REST",
     "Boundaries",
@@ -144,6 +173,8 @@ __all__ = [
     "SparseMatrix",
     "SurfaceExchange",
     "StaggeredVelocity",
+    "SubgridCooling",
+    "SubgridSpray",
     "Wall",
     "advection",
     "assemble_pressure_matrix",
@@ -155,6 +186,8 @@ __all__ = [
     "build_adaptive_run",
     "build_atmospheric_run",
     "build_atmospheric_step",
+    "build_subgrid_cooling_source",
+    "build_subgrid_spray_sources",
     "build_open_atmospheric_run",
     "build_open_atmospheric_step",
     "boussinesq_tendency",
@@ -167,13 +200,18 @@ __all__ = [
     "cell_coordinates",
     "cell_shape",
     "cell_velocity",
+    "cell_to_faces",
     "courant_number",
     "coriolis_tendency",
+    "conservative_specific_tendency",
+    "continuity_residual",
+    "dilatation_correction",
     "coupled_surface_exchange",
     "default_tolerance",
     "diffusion",
     "divergence",
     "eddy_viscosity",
+    "face_density",
     "edge_gradients",
     "enforce_impermeability",
     "enforce_open_scalar",
@@ -186,22 +224,29 @@ __all__ = [
     "kinetic_energy",
     "logarithmic_profile",
     "matrix_vector_product",
+    "mass_flux",
+    "mixing_ratio_to_mass_fraction",
     "monin_obukhov_boundaries",
     "periodic_to_open_velocity",
     "pressure_gradient",
     "project",
+    "project_low_mach",
     "rayleigh_sponge_tendency",
     "scalar_tendency",
     "stable_timestep",
     "stress_divergence",
     "subfilter_tendency",
     "surface_momentum_tendency",
+    "sidewall_stress",
+    "sidewall_tendency",
     "surface_stress",
     "tangential_z_gradient",
+    "spanwise_is_periodic",
     "streamwise_is_periodic",
     "validate",
     "validate_inflow_plane",
     "x_face_shape",
+    "y_face_shape",
     "wall_tendency",
     "z_face_shape",
     "zeros",

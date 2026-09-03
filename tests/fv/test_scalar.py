@@ -60,6 +60,24 @@ class PassiveScalarTest(unittest.TestCase):
             PassiveScalar(),
         )
         self.assertLess(abs(float(jnp.sum(tendency))), 1.0e-12)
+    def test_upwind_transport_preserves_explicit_euler_bounds(self) -> None:
+        velocity = StaggeredVelocity(
+            jnp.ones(self.shape),
+            jnp.zeros(self.shape),
+            jnp.zeros((self.grid.nz + 1, self.grid.ny, self.grid.nx)),
+        )
+        scalar = -jnp.zeros(self.shape).at[..., 2:4].set(1.0)
+        tendency = scalar_tendency(
+            scalar,
+            velocity,
+            self.grid,
+            PassiveScalar(advection_scheme="upwind"),
+        )
+        updated = scalar + 0.5 * self.grid.dx * tendency
+
+        self.assertGreaterEqual(float(jnp.min(updated)), -1.0)
+        self.assertLessEqual(float(jnp.max(updated)), 0.0)
+        self.assertAlmostEqual(float(jnp.sum(updated)), float(jnp.sum(scalar)))
 
 
 if __name__ == "__main__":

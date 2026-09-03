@@ -33,7 +33,22 @@ def write_log_law_svg(
         float(row["mean_u_m_s"]) / friction_velocity_m_s for row in rows
     ]
     normalized_z = [height / roughness_length_m for height in z]
-    reference = [math.log(height) / von_karman for height in normalized_z]
+    has_discrete_reference = all(
+        row.get("log_law_u_m_s") not in (None, "") for row in rows
+    )
+    reference = (
+        [
+            float(row["log_law_u_m_s"]) / friction_velocity_m_s
+            for row in rows
+        ]
+        if has_discrete_reference
+        else [math.log(height) / von_karman for height in normalized_z]
+    )
+    reference_label = (
+        "FV cell-averaged log law"
+        if has_discrete_reference
+        else "U+ = ln(z/z0)/kappa"
+    )
     if min(normalized_z) <= 0.0 or not all(map(math.isfinite, measured)):
         raise ValueError("profile heights and velocities must be finite and positive")
 
@@ -134,7 +149,7 @@ def write_log_law_svg(
             f'<line class="log" x1="{left + 280}" y1="{top + 24}" '
             f'x2="{left + 325}" y2="{top + 24}"/>',
             f'<text class="tick" x="{left + 335}" y="{top + 29}">'
-            "U+ = ln(z/z0)/kappa</text>",
+            f"{reference_label}</text>",
             "</svg>",
         )
     )
