@@ -24,6 +24,45 @@ from .diagnostics import (
 )
 
 
+def _next_adaptive_target(
+    now: float,
+    *,
+    total_time: float,
+    chunk_time: float,
+    sample_start_time: float,
+    sample_period_time: float,
+) -> float:
+    """Return the next time an adaptive block must stop on exactly.
+
+    Blocks land on sample boundaries so the statistics schedule stays the
+    configured physical one no matter what steps the CFL ceiling picks.
+    """
+
+    if now < sample_start_time:
+        boundary = sample_start_time
+    else:
+        elapsed_samples = math.floor(
+            (now - sample_start_time) / sample_period_time + 1e-9
+        )
+        boundary = sample_start_time + (elapsed_samples + 1) * sample_period_time
+    return min(total_time, now + chunk_time, boundary)
+
+
+def _at_sample_time(
+    now: float,
+    *,
+    sample_start_time: float,
+    sample_period_time: float,
+    tolerance: float,
+) -> bool:
+    """Report whether ``now`` sits on the configured sampling schedule."""
+
+    if now < sample_start_time - tolerance:
+        return False
+    periods = round((now - sample_start_time) / sample_period_time)
+    return abs((now - sample_start_time) - periods * sample_period_time) <= tolerance
+
+
 def _physical_rotation(case) -> tuple[float, float, float, float]:
     vertical, horizontal = case.coriolis_s
     if vertical == 0.0:
@@ -202,6 +241,7 @@ def evaluate(
         AnisotropicMinimumDissipation,
         CELL_AVERAGE,
         LOCAL,
+        PLANAR,
         CoriolisGeostrophic,
         FlowModel,
         LinearBoussinesqBuoyancy,
@@ -211,6 +251,7 @@ def evaluate(
         StaggeredVelocity,
         atmospheric_history_diagnostics,
         atmospheric_profile_diagnostics,
+        build_adaptive_atmospheric_run,
         build_atmospheric_run,
         build_atmospheric_step,
         build_pressure_poisson,
@@ -269,7 +310,8 @@ def evaluate(
             configuration["roughness_length_m"],
             von_karman=case.von_karman,
             sampling=CELL_AVERAGE,
-            averaging=LOCAL,
+            averaging=PLANAR if options.wall_averaging == "planar" else LOCAL,
+            gradient_correction=options.wall_gradient_correction,
         )
     momentum = FlowModel(
         body_force=(pressure_force[0], pressure_force[1], 0.0),
@@ -315,6 +357,7 @@ def evaluate(
             iterations=coupled_surface.iterations,
             relaxation=coupled_surface.relaxation,
             maximum_abs_zeta=coupled_surface.maximum_abs_zeta,
+            gradient_correction=options.wall_gradient_correction,
         )
     step = build_atmospheric_step(
         grid,
@@ -326,7 +369,17 @@ def evaluate(
         surface,
         scheme=options.time_integration,
     )
-    advance = build_atmospheric_run(step)
+    adaptive = options.cfl_ceiling is not None
+    if adaptive:
+        # dt_seconds is the upper bound; the CFL ceiling sets the actual step.
+        advance = build_adaptive_atmospheric_run(
+            step,
+            grid,
+            cfl_ceiling=options.cfl_ceiling,
+            maximum_dt=case.dt_seconds,
+        )
+    else:
+        advance = build_atmospheric_run(step)
     solution = initial_atmospheric_solution(
         grid,
         velocity,
@@ -439,26 +492,65 @@ def evaluate(
         "elapsed_seconds",
         "milliseconds_per_step",
     )
+    # The configured step counts always denote the physical schedule. Under a
+    # CFL ceiling the steps taken to cover it are chosen by the solver, so the
+    # schedule is carried in seconds instead.
+    total_time = target_steps * case.dt_seconds
+    sample_start_time = case.sample_start_step * case.dt_seconds
+    sample_period_time = case.sample_every_steps * case.dt_seconds
+    chunk_time = options.chunk_steps * case.dt_seconds
+    time_tolerance = 8.0 * np.finfo(np.float32).eps * max(1.0, total_time)
+    start_time = float(solution.time)
+    initial_step = int(solution.step)
     elapsed_total = 0.0
     with (output_dir / "history.csv").open(
         "w", newline="", encoding="utf-8"
     ) as history_stream:
         writer = csv.DictWriter(history_stream, fieldnames=history_fields)
         writer.writeheader()
-        while int(solution.step) < target_steps:
+        while (
+            float(solution.time) - start_time < total_time - time_tolerance
+            if adaptive
+            else int(solution.step) < target_steps
+        ):
             current = int(solution.step)
-            block = min(options.chunk_steps, target_steps - current)
-            block = min(
-                block,
-                steps_to_next_sample(
-                    current,
-                    case.sample_start_step,
-                    case.sample_every_steps,
-                ),
-            )
+            block_start_time = float(solution.time)
             started = time.perf_counter()
-            solution = advance(solution, case.dt_seconds, block)
-            jax.block_until_ready(solution.velocity.x)
+            if adaptive:
+                block_target = start_time + _next_adaptive_target(
+                    float(solution.time) - start_time,
+                    total_time=total_time,
+                    chunk_time=chunk_time,
+                    sample_start_time=sample_start_time,
+                    sample_period_time=sample_period_time,
+                )
+                while float(solution.time) < block_target - time_tolerance:
+                    before = int(solution.step)
+                    solution = advance(
+                        solution, block_target, options.chunk_steps
+                    )
+                    jax.block_until_ready(solution.velocity.x)
+                    if int(solution.step) == before:
+                        raise RuntimeError(
+                            "adaptive block made no progress at "
+                            f"t={float(solution.time):.3f} s; the CFL ceiling "
+                            "cannot be met with a finite step"
+                        )
+                block = int(solution.step) - current
+                block_dt = (float(solution.time) - block_start_time) / block
+            else:
+                block = min(options.chunk_steps, target_steps - current)
+                block = min(
+                    block,
+                    steps_to_next_sample(
+                        current,
+                        case.sample_start_step,
+                        case.sample_every_steps,
+                    ),
+                )
+                solution = advance(solution, case.dt_seconds, block)
+                jax.block_until_ready(solution.velocity.x)
+                block_dt = case.dt_seconds
             elapsed = time.perf_counter() - started
             elapsed_total += elapsed
             completed = int(solution.step)
@@ -466,7 +558,7 @@ def evaluate(
                 jnp.max(jnp.abs(divergence(solution.velocity, grid)))
             )
             maximum_cfl = float(
-                courant_number(solution.velocity, grid, case.dt_seconds)
+                courant_number(solution.velocity, grid, block_dt)
             )
             row = {
                 "step": completed,
@@ -511,10 +603,19 @@ def evaluate(
             writer.writerow(row)
             history_stream.flush()
             if (
-                completed >= case.sample_start_step
-                and (completed - case.sample_start_step)
-                % case.sample_every_steps
-                == 0
+                _at_sample_time(
+                    float(solution.time) - start_time,
+                    sample_start_time=sample_start_time,
+                    sample_period_time=sample_period_time,
+                    tolerance=time_tolerance,
+                )
+                if adaptive
+                else (
+                    completed >= case.sample_start_step
+                    and (completed - case.sample_start_step)
+                    % case.sample_every_steps
+                    == 0
+                )
             ):
                 _sample(
                     solution,
@@ -526,10 +627,16 @@ def evaluate(
                     surface_statistics,
                 )
             status = (
-                f"step {completed:6d}/{target_steps}  "
-                f"t {float(solution.time) / 3600.0:7.3f} h  "
-                f"CFL {maximum_cfl:.3f}  div {maximum_divergence:.2e}  "
-                f"{1000.0 * elapsed / block:.2f} ms/step"
+                (
+                    f"step {completed:7d}  "
+                    f"t {(float(solution.time) - start_time) / 3600.0:7.3f}"
+                    f"/{total_time / 3600.0:.3f} h  dt {block_dt:.4f} s  "
+                    if adaptive
+                    else f"step {completed:6d}/{target_steps}  "
+                    f"t {float(solution.time) / 3600.0:7.3f} h  "
+                )
+                + f"CFL {maximum_cfl:.3f}  div {maximum_divergence:.2e}  "
+                + f"{1000.0 * elapsed / block:.2f} ms/step"
             )
             print(status, flush=True)
 
@@ -619,6 +726,20 @@ def evaluate(
             "elapsed_seconds": elapsed_total,
             "maximum_divergence_s": final_divergence,
             "profile_samples": accumulator.count,
+            "dt_interpretation": "maximum" if adaptive else "fixed",
+            "cfl_ceiling": options.cfl_ceiling,
+            **(
+                {
+                    "mean_dt_seconds": (
+                        (float(solution.time) - start_time)
+                        / (int(solution.step) - initial_step)
+                        if int(solution.step) > initial_step
+                        else None
+                    ),
+                }
+                if adaptive
+                else {}
+            ),
         },
         "diagnostic_metrics": diagnostic_metrics,
         **({"comparison": comparison} if comparison is not None else {}),

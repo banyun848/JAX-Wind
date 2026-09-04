@@ -733,6 +733,7 @@ def _models(
         AnisotropicMinimumDissipation,
         CELL_AVERAGE,
         LOCAL,
+        PLANAR,
         OPEN,
         Boundaries,
         CoriolisGeostrophic,
@@ -765,7 +766,8 @@ def _models(
             configuration["roughness_length_m"],
             von_karman=case.von_karman,
             sampling=CELL_AVERAGE,
-            averaging=LOCAL,
+            averaging=PLANAR if configured.options.wall_averaging == "planar" else LOCAL,
+            gradient_correction=configured.options.wall_gradient_correction,
         )
     else:
         coefficient = configuration["buoyancy_acceleration_per_scalar"]
@@ -789,6 +791,7 @@ def _models(
             iterations=coupled.iterations,
             relaxation=coupled.relaxation,
             maximum_abs_zeta=coupled.maximum_abs_zeta,
+            gradient_correction=configured.options.wall_gradient_correction,
         )
     pressure_force = configuration["pressure_acceleration_m_s2"]
     if not pressure_force_enabled:

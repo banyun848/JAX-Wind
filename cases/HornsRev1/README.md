@@ -1,0 +1,84 @@
+# HornsRev1
+
+Neutral offshore precursor for the Horns Rev 1 wind farm (Vestas V80-2.0 MW,
+80 m rotor, 70 m hub height, 7D spacing). This directory currently provides the
+**warmup** stage only: a periodic, pressure-driven neutral boundary layer that
+spins up turbulence for a later precursor/main turbine workflow.
+
+## Configuration
+
+| | |
+|---|---|
+| Domain | 10240 x 10240 x 1280 m |
+| Mesh | 256 x 256 x 64 (dx = dy = 40 m, dz = 20 m), or 256 x 256 x 128 (dz = 10 m) |
+| Roughness | `z0 = 2e-4 m` (offshore) |
+| Inflow | `U(70 m) = 8 m/s`, neutral, no Coriolis |
+| Friction velocity | `u* = kappa U_hub / ln(z_hub/z0) = 0.250672 m/s` |
+| Forcing | `dp/dx = u*^2 / lz = 4.9090957826e-05 m/s^2` |
+| Scheme | RK3 with adaptive timestep, `cfl_ceiling = 0.9` |
+| Warmup | `6000 x 6.0 s = 36000 s` (10 h, ~7 turnovers at `lz/u* = 5106 s`) |
+
+`dt_seconds` is the step **cap**, not a fixed step: with `cfl_ceiling` set, the
+solver picks each step from the CFL ceiling and only clips at the cap. The
+configured step counts therefore denote the physical schedule
+(`duration = steps * dt_seconds`), not the steps actually taken.
+
+## Running
+
+```bash
+# dz = 20 m
+python -m applications.fv_abl.workflow cases/HornsRev1/fv_workflow.toml \
+  --stage warmup --overwrite
+
+# dz = 10 m (same domain, doubled vertical resolution)
+python -m applications.fv_abl.workflow \
+  cases/HornsRev1/fv_workflow_256x256x128.toml --stage warmup --overwrite
+```
+
+Continue an existing warmup by pointing `warmup_restart_checkpoint` in
+`[finite_volume_workflow]` at the checkpoint to resume from and sending the run
+to a fresh `output_directory`; the stage adds `warmup_steps * dt_seconds` of
+physical time to the checkpoint's clock.
+
+At dz = 20 m the field is developed by t = 10 h: continuing to 20 h moved
+integrated resolved TKE by +0.04 % and hub-height wind by -0.35 %, and the
+resolved stress already matched the exact `1 - z/lz` equilibrium line.
+
+## Initial profiles
+
+`fv_initial_profile_64.csv` matches the 64-level mesh; `fv_initial_profile_128.csv`
+matches the 128-level mesh (dz = 10 m). Both follow
+the mean-plus-RMS convention shared by the other finite-volume ABL cases:
+
+```
+u(z)   = (u*/kappa) ln(z/z0)                    v = w = scalar = 0
+u_rms  = v_rms = 0.25 u* sin(pi z / lz)**0.25   (cell centres)
+w_rms  = 0.25 u* sin(pi z_upper / lz)           (upper cell faces)
+```
+
+A profile must have exactly one row per vertical cell, with `z_m` matching the
+grid cell centres.
+
+## Resolution note
+
+512 x 512 x 128 (33.5 M cells) does **not** fit on an 8 GB GPU: the solver needs
+roughly 290 B/cell, i.e. ~9.7 GB, and fails to allocate regardless of time
+integration scheme (RK3, fast-RK3 and AB2 all exhaust memory). Measured limits
+on an RTX 3070 with ~5.6 GB free were 384 x 384 x 128 (18.9 M cells, 5.6 GB
+peak) working and 448 x 448 x 128 failing.
+
+## Comparing against the log law
+
+The solver stores **cell averages**, so compare them against the log law
+averaged over each cell, not its value at the cell centre. For a log profile the
+first cell differs by
+
+```
+(u*/kappa)(ln 2 - 1) = -0.192 m/s   at dz = 20 m
+```
+
+which is large enough to make a correct first cell look wrong. The correction
+falls to -0.012 m/s by the second cell and is negligible above it. Likewise,
+when plotting `Phi_m = (kappa z / u*) d<u>/dz`, push the exact log law through
+the same finite-difference stencil - the near-wall dip and the bump one cell up
+are artifacts of the one-sided difference, not solver error.

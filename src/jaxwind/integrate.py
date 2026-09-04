@@ -119,6 +119,9 @@ def build_tendency(
     def tendency(
         velocity: StaggeredVelocity,
         time: jnp.ndarray,
+        *,
+        surface_override=None,
+        mesh_stability=0.0,
     ) -> StaggeredVelocity:
         total = advection(velocity, grid)
         if model.viscosity:
@@ -146,6 +149,8 @@ def build_tendency(
                 grid,
                 boundaries,
                 model.subfilter,
+                surface=model.surface if surface_override is None else surface_override,
+                mesh_stability=mesh_stability,
             )
             total = _add(total, subfilter)
         if model.forcing is not None:

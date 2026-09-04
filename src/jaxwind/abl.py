@@ -91,8 +91,27 @@ def build_atmospheric_step(
         )
     momentum_rhs = build_tendency(grid, boundaries, momentum)
 
+    # The coupled surface knows the Obukhov length, so it -- not the neutral
+    # wall -- is what makes the subfilter gradient correction stability aware.
+    # A MoninObukhovWall is built once here purely as the carrier of the
+    # roughness, von Karman constant and sampling convention the correction
+    # needs; the momentum boundary condition still comes from the exchange.
+    correction_wall = None
+    if surface_transfer is not None and surface_transfer.gradient_correction:
+        from .wall import CELL_AVERAGE, MoninObukhovWall
+
+        correction_wall = MoninObukhovWall(
+            surface_transfer.momentum_roughness,
+            von_karman=surface_transfer.von_karman,
+            sampling=CELL_AVERAGE,
+            gradient_correction=True,
+            corrected_faces=surface_transfer.corrected_faces,
+        )
+    first_height = float(grid.z_widths[0])
+
     def tendencies(velocity, scalar_field, execution_time):
-        current_momentum = momentum_rhs(velocity, execution_time)
+        # The exchange is evaluated first so the momentum tendency can use its
+        # Obukhov length; it depends only on the state, not on the tendency.
         exchange = None
         if surface_transfer is not None:
             exchange = coupled_surface_exchange(
@@ -102,6 +121,27 @@ def build_atmospheric_step(
                 grid,
                 surface_transfer,
             )
+        if correction_wall is None:
+            current_momentum = momentum_rhs(velocity, execution_time)
+        else:
+            # s = h / L, the cell height in Obukhov units.  An infinite L
+            # (neutral) gives s = 0 and the correction falls back to ln 4.
+            stability = jnp.where(
+                jnp.isfinite(exchange.obukhov_length),
+                first_height / jnp.where(
+                    exchange.obukhov_length == 0.0,
+                    jnp.inf,
+                    exchange.obukhov_length,
+                ),
+                0.0,
+            )
+            current_momentum = momentum_rhs(
+                velocity,
+                execution_time,
+                surface_override=correction_wall,
+                mesh_stability=stability,
+            )
+        if exchange is not None:
             source = surface_momentum_tendency(velocity, exchange, grid)
             current_momentum = StaggeredVelocity(
                 current_momentum.x + source.x,

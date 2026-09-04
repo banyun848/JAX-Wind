@@ -24,6 +24,8 @@ class FiniteVolumeOptions:
     spectrum_diagnostic: str
     output_directory: Path
     scalar_advection_scheme: str = "central"
+    wall_averaging: str = "local"
+    wall_gradient_correction: bool = False
     cfl_ceiling: float | None = None
     gmg_tolerance: float | None = None
     gmg_presweeps: int = 2
@@ -96,6 +98,8 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
         "gmg_postsweeps",
         "gmg_anisotropy_aware",
         "scalar_advection_scheme",
+        "wall_averaging",
+        "wall_gradient_correction",
     }
     unknown = table.keys() - expected - optional
     if missing:
@@ -133,6 +137,14 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
             table.get("scalar_advection_scheme", "central"),
             {"central", "upwind"},
             "scalar_advection_scheme",
+        ),
+        wall_gradient_correction=bool(
+            table.get("wall_gradient_correction", False)
+        ),
+        wall_averaging=_choice(
+            table.get("wall_averaging", "local"),
+            {"local", "planar"},
+            "wall_averaging",
         ),
         cfl_ceiling=(
             _positive_number(table, "cfl_ceiling")

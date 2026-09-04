@@ -33,6 +33,8 @@ class MoninObukhovSurface:
     iterations: int = 12
     relaxation: float = 0.5
     maximum_abs_zeta: float = 10.0
+    gradient_correction: bool = False
+    corrected_faces: int = 3
 
     def __post_init__(self) -> None:
         positive = (

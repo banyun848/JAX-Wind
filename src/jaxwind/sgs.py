@@ -456,9 +456,24 @@ def subfilter_tendency(
     grid: Grid,
     boundaries: Boundaries,
     model: AnisotropicMinimumDissipation | StaticSmagorinsky,
+    *,
+    surface=None,
+    mesh_stability=0.0,
 ) -> tuple[StaggeredVelocity, jnp.ndarray]:
-    """Return the subfilter momentum tendency and its eddy viscosity."""
+    """Return the subfilter momentum tendency and its eddy viscosity.
+
+    ``surface`` optionally supplies the wall model.  When it asks for the
+    logarithmic gradient correction the wall-normal shear the closure sees is
+    adjusted before the stress is formed; the momentum boundary condition
+    itself is unchanged and still comes from the wall model.
+    """
     gradients = edge_gradients(velocity, grid, boundaries)
+    if surface is not None and getattr(surface, "gradient_correction", False):
+        from .wall import log_law_gradient_correction
+
+        gradients = log_law_gradient_correction(
+            gradients, velocity, grid, surface, mesh_stability=mesh_stability
+        )
     viscosity = eddy_viscosity(
         velocity,
         grid,
