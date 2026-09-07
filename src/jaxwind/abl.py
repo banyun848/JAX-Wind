@@ -80,6 +80,7 @@ def build_atmospheric_step(
     surface_transfer: MoninObukhovSurface | None = None,
     *,
     scheme: str = "ab2",
+    momentum_barrier_after_advection: bool = False,
 ) -> Callable[[AtmosphericSolution, float], AtmosphericSolution]:
     """Build one coupled AB2 or single-projection RK3 atmospheric step."""
 
@@ -89,7 +90,12 @@ def build_atmospheric_step(
         raise ValueError(
             "independent and coupled FV surface models are mutually exclusive"
         )
-    momentum_rhs = build_tendency(grid, boundaries, momentum)
+    momentum_rhs = build_tendency(
+        grid,
+        boundaries,
+        momentum,
+        barrier_after_advection=momentum_barrier_after_advection,
+    )
 
     # The coupled surface knows the Obukhov length, so it -- not the neutral
     # wall -- is what makes the subfilter gradient correction stability aware.

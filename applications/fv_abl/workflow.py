@@ -1007,6 +1007,7 @@ def _periodic_advance(
     configured: FiniteVolumeCase,
     *,
     fft_config: dict[str, Any] | None = None,
+    momentum_barrier_after_advection: bool = False,
 ):
     from jaxwind import (
         build_atmospheric_run,
@@ -1038,6 +1039,7 @@ def _periodic_advance(
         buoyancy,
         surface,
         scheme=configured.options.time_integration,
+        momentum_barrier_after_advection=momentum_barrier_after_advection,
     )
     return step, build_atmospheric_run(step)
 

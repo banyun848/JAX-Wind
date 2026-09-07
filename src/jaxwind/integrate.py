@@ -112,8 +112,15 @@ def build_tendency(
     grid: Grid,
     boundaries: Boundaries,
     model: FlowModel,
+    *,
+    barrier_after_advection: bool = False,
 ) -> Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity]:
-    """Return the explicit right-hand side of the momentum equations."""
+    """Return the explicit right-hand side of the momentum equations.
+
+    ``barrier_after_advection`` is an experimental backend-tuning switch. It
+    prevents XLA from fusing momentum advection into the following closure and
+    forcing graph while leaving the numerical result unchanged.
+    """
     force_x, force_y, force_z = model.body_force
 
     def tendency(
@@ -124,6 +131,12 @@ def build_tendency(
         mesh_stability=0.0,
     ) -> StaggeredVelocity:
         total = advection(velocity, grid)
+        if barrier_after_advection:
+            total = StaggeredVelocity(
+                jax.lax.optimization_barrier(total.x),
+                jax.lax.optimization_barrier(total.y),
+                jax.lax.optimization_barrier(total.z),
+            )
         if model.viscosity:
             total = _add(total, diffusion(velocity, grid, boundaries, model.viscosity))
         if force_x or force_y or force_z:

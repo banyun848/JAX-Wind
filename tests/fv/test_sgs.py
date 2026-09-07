@@ -192,6 +192,26 @@ class SubfilterStressTest(unittest.TestCase):
 class LargeEddyRunTest(unittest.TestCase):
     grid = UniformGrid(8, 8, 8, 1.0, 1.0, 1.0)
 
+    def test_advection_barrier_preserves_the_tendency(self) -> None:
+        velocity = turbulent_velocity(self.grid, 29)
+        model = FlowModel(
+            body_force=(0.1, 0.0, 0.0),
+            subfilter=MODEL,
+        )
+        plain = jax.jit(build_tendency(self.grid, WALLS, model))
+        barrier = jax.jit(
+            build_tendency(
+                self.grid,
+                WALLS,
+                model,
+                barrier_after_advection=True,
+            )
+        )
+        plain_value = plain(velocity, 0.0)
+        barrier_value = barrier(velocity, 0.0)
+        for regular, separated in zip(plain_value, barrier_value):
+            self.assertTrue(bool(jnp.array_equal(regular, separated)))
+
     def test_the_closure_reaches_the_time_stepper(self) -> None:
         velocity = turbulent_velocity(self.grid, 8)
         direct = build_tendency(self.grid, WALLS, FlowModel(viscosity=0.01))
