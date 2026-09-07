@@ -115,6 +115,12 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
   --json hitsz-step-benchmark.json
 ```
 
+The FFT backend defaults to the custom chunked Thomas solve selected by
+`finite_volume.fft_method`. Compare the block-parallel SPIKE path on the same
+case without editing the TOML by adding
+`--fft-method spike --spike-block-size 32`; `--thomas-chunk` controls the
+unrolled local Thomas sweep used by both methods.
+
 The benchmark reports production adaptive and fixed-dt throughput, decomposes
 the step into CFL selection, lagged pressure gradient, three explicit
 tendency/RK updates, and the FFT projection, then drills into momentum, AMD,

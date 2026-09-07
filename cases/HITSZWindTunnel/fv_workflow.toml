@@ -43,6 +43,9 @@ spectrum_heights_m = [0.876]
 
 [finite_volume]
 pressure_backend = "fft"
+fft_method = "thomas"
+fft_thomas_chunk = 16
+fft_spike_block_size = 32
 time_integration = "fast-rk3"
 cfl_ceiling = 1.0
 turbulent_prandtl = 0.4

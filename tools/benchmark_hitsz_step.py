@@ -51,6 +51,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--setup-steps", type=_positive, default=2)
     result.add_argument("--samples", type=_positive, default=5)
     result.add_argument("--component-repeats", type=_positive, default=3)
+    result.add_argument("--fft-method", choices=("thomas", "spike"))
+    result.add_argument("--thomas-chunk", type=_positive)
+    result.add_argument("--spike-block-size", type=_positive)
     result.add_argument("--json", type=Path, dest="json_path")
     return result
 
@@ -194,6 +197,15 @@ def main(argv: list[str] | None = None) -> int:
     case = configured.physical
     options = configured.options
     grid = case.physical_grid
+    fft_config = {
+        "method": arguments.fft_method or options.fft_method,
+        "thomas_chunk": (
+            arguments.thomas_chunk or options.fft_thomas_chunk
+        ),
+        "spike_block_size": (
+            arguments.spike_block_size or options.fft_spike_block_size
+        ),
+    }
     if options.time_integration != "fast-rk3":
         raise ValueError("the decomposition currently requires fast-rk3")
     if options.cfl_ceiling is None:
@@ -210,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             "the benchmark currently targets the neutral HITSZ warmup closures"
         )
 
-    step, _ = _periodic_advance(configured)
+    step, _ = _periodic_advance(configured, fft_config=fft_config)
     fixed_run = build_atmospheric_run(step)
     adaptive_run = build_adaptive_atmospheric_run(
         step,
@@ -218,7 +230,10 @@ def main(argv: list[str] | None = None) -> int:
         cfl_ceiling=options.cfl_ceiling,
         maximum_dt=case.dt_seconds,
     )
-    solution = _ready(jax, _initial_periodic(configured, jax, jnp))
+    solution = _ready(
+        jax,
+        _initial_periodic(configured, jax, jnp, fft_config=fft_config),
+    )
 
     setup_target = float(solution.time) + arguments.setup_steps * case.dt_seconds
     setup_started = time.perf_counter()
@@ -260,7 +275,12 @@ def main(argv: list[str] | None = None) -> int:
             f"{arguments.block_steps}"
         )
 
-    poisson = build_pressure_poisson(grid, backend="fft", dtype=case.dtype)
+    poisson = build_pressure_poisson(
+        grid,
+        backend="fft",
+        dtype=case.dtype,
+        config=fft_config,
+    )
     momentum_rhs = build_tendency(grid, boundaries, momentum)
 
     def scalar_rhs(velocity, scalar_field):
@@ -463,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
             "maximum_dt_seconds": case.dt_seconds,
             "representative_dt_seconds": stable_dt,
             "cfl_ceiling": options.cfl_ceiling,
+            "fft": fft_config,
         },
         "settings": {
             "block_steps": arguments.block_steps,
@@ -503,7 +524,8 @@ def main(argv: list[str] | None = None) -> int:
         f"jax={environment['jax_version']} jaxlib={environment['jaxlib_version']}\n"
         f"device={environment['devices']}\n"
         f"grid={grid.nx}x{grid.ny}x{grid.nz} dtype={case.dtype} "
-        f"dt_max={case.dt_seconds:g}s dt_sample={stable_dt:g}s"
+        f"dt_max={case.dt_seconds:g}s dt_sample={stable_dt:g}s\n"
+        f"fft={fft_config}"
     )
     _print_table(
         "End-to-end (synchronized once per block)",

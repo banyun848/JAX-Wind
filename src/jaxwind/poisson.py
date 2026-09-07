@@ -434,17 +434,291 @@ def build_amg_solver(
     return solve
 
 
+def _thomas_factor_arrays(lower, diagonal, upper):
+    """Precompute the modified diagonal and upper factors for Thomas solves."""
+    inverse_first = 1.0 / diagonal[0]
+    gamma_first = jnp.zeros_like(inverse_first)
+    if diagonal.shape[0] == 1:
+        return inverse_first[None], gamma_first[None]
+
+    def factor_row(carry, rows):
+        inverse_previous, upper_previous = carry
+        lower_row, diagonal_row, upper_row = rows
+        gamma_row = upper_previous * inverse_previous
+        inverse_row = 1.0 / (diagonal_row - lower_row * gamma_row)
+        return (inverse_row, upper_row), (inverse_row, gamma_row)
+
+    _, (inverse_tail, gamma_tail) = jax.lax.scan(
+        factor_row,
+        (inverse_first, upper[0]),
+        (lower[1:], diagonal[1:], upper[1:]),
+    )
+    return (
+        jnp.concatenate((inverse_first[None], inverse_tail), axis=0),
+        jnp.concatenate((gamma_first[None], gamma_tail), axis=0),
+    )
+
+
+def _chunked_scan_rows(initial, row_arrays, step, chunk: int):
+    """Scan dependent rows while statically unrolling rows within each chunk."""
+    row_count = row_arrays[0].shape[0]
+    resolved_chunk = min(chunk, row_count)
+    chunk_count = row_count // resolved_chunk
+    full_count = chunk_count * resolved_chunk
+    carry = initial
+    pieces = []
+
+    if chunk_count:
+        chunked = tuple(
+            values[:full_count].reshape(
+                (chunk_count, resolved_chunk) + values.shape[1:]
+            )
+            for values in row_arrays
+        )
+
+        def scan_chunk(previous, rows):
+            current = previous
+            outputs = []
+            for index in range(resolved_chunk):
+                current = step(
+                    current,
+                    tuple(values[index] for values in rows),
+                )
+                outputs.append(current)
+            return current, jnp.stack(outputs)
+
+        carry, output = jax.lax.scan(scan_chunk, carry, chunked)
+        pieces.append(output.reshape((full_count,) + output.shape[2:]))
+
+    if full_count < row_count:
+        tail = []
+        for index in range(full_count, row_count):
+            carry = step(
+                carry,
+                tuple(values[index] for values in row_arrays),
+            )
+            tail.append(carry)
+        pieces.append(jnp.stack(tail))
+
+    return pieces[0] if len(pieces) == 1 else jnp.concatenate(pieces, axis=0)
+
+
+def _chunked_thomas_solve(
+    lower,
+    inverse_diagonal,
+    gamma,
+    right_hand_side,
+    *,
+    chunk: int,
+):
+    """Solve z-first batches with the reference solver's chunked Thomas scan."""
+    zero = jnp.zeros_like(right_hand_side[0])
+
+    def forward(previous, rows):
+        lower_row, inverse_row, rhs_row = rows
+        return (rhs_row - lower_row * previous) * inverse_row
+
+    forward_values = _chunked_scan_rows(
+        zero,
+        (lower, inverse_diagonal, right_hand_side),
+        forward,
+        chunk,
+    )
+    gamma_next = jnp.concatenate(
+        (gamma[1:], jnp.zeros_like(gamma[:1])),
+        axis=0,
+    )
+
+    def backward(next_value, rows):
+        forward_value, gamma_value = rows
+        return forward_value - gamma_value * next_value
+
+    reversed_solution = _chunked_scan_rows(
+        zero,
+        (forward_values[::-1], gamma_next[::-1]),
+        backward,
+        chunk,
+    )
+    return reversed_solution[::-1]
+
+
+def _build_spike_factors(
+    lower,
+    diagonal,
+    upper,
+    *,
+    block_size: int,
+    thomas_chunk: int,
+):
+    """Factor independent blocks and their reduced SPIKE interface system."""
+    vertical_size = diagonal.shape[0]
+    block_count = vertical_size // block_size
+
+    def blocked(values):
+        return values.reshape(
+            (block_count, block_size) + values.shape[1:]
+        ).swapaxes(0, 1)
+
+    blocked_lower = blocked(lower)
+    blocked_diagonal = blocked(diagonal)
+    blocked_upper = blocked(upper)
+    local_lower = blocked_lower.at[0].set(0.0)
+    local_upper = blocked_upper.at[-1].set(0.0)
+    inverse_diagonal, gamma = _thomas_factor_arrays(
+        local_lower,
+        blocked_diagonal,
+        local_upper,
+    )
+
+    left_basis = jnp.zeros_like(blocked_diagonal).at[0].set(
+        blocked_lower[0]
+    )
+    right_basis = jnp.zeros_like(blocked_diagonal).at[-1].set(
+        blocked_upper[-1]
+    )
+    left_spike = _chunked_thomas_solve(
+        local_lower,
+        inverse_diagonal,
+        gamma,
+        left_basis,
+        chunk=thomas_chunk,
+    )
+    right_spike = _chunked_thomas_solve(
+        local_lower,
+        inverse_diagonal,
+        gamma,
+        right_basis,
+        chunk=thomas_chunk,
+    )
+
+    # The reduced interface matrix has two unknowns per block: the first and
+    # last vertical values. Its off-diagonal 2x2 blocks contain only one
+    # nonzero column, so retain the reference solver's six scalar factors
+    # instead of forming a dense batched matrix.
+    left_first, left_last = left_spike[0], left_spike[-1]
+    right_first, right_last = right_spike[0], right_spike[-1]
+    zero = jnp.zeros_like(left_first[0])
+
+    def factor_interface(previous_c1, spike_rows):
+        w_first, w_last, v_first, v_last = spike_rows
+        inverse_pivot = 1.0 / (1.0 - w_first * previous_c1)
+        g10 = w_last * previous_c1 * inverse_pivot
+        a0 = inverse_pivot * w_first
+        a1 = g10 * w_first + w_last
+        c0 = inverse_pivot * v_first
+        c1 = g10 * v_first + v_last
+        return c1, (inverse_pivot, g10, a0, a1, c0, c1)
+
+    _, interface_factors = jax.lax.scan(
+        factor_interface,
+        zero,
+        (left_first, left_last, right_first, right_last),
+    )
+    return (
+        local_lower,
+        inverse_diagonal,
+        gamma,
+        left_spike,
+        right_spike,
+        interface_factors,
+    )
+
+
+def _spike_solve(
+    factors,
+    right_hand_side,
+    *,
+    block_size: int,
+    thomas_chunk: int,
+):
+    """Apply a pre-factored SPIKE solve to a z-first batch of systems."""
+    (
+        local_lower,
+        inverse_diagonal,
+        gamma,
+        left_spike,
+        right_spike,
+        interface_factors,
+    ) = factors
+    block_count = right_hand_side.shape[0] // block_size
+    blocked_rhs = right_hand_side.reshape(
+        (block_count, block_size) + right_hand_side.shape[1:]
+    ).swapaxes(0, 1)
+    local_solution = _chunked_thomas_solve(
+        local_lower,
+        inverse_diagonal,
+        gamma,
+        blocked_rhs,
+        chunk=thomas_chunk,
+    )
+    g00, g10, a0, a1, c0, c1 = interface_factors
+    interface_rhs = (local_solution[0], local_solution[-1])
+    zero = jnp.zeros_like(interface_rhs[0][0])
+
+    def forward(previous_last, rows):
+        first_rhs, last_rhs, row_g00, row_g10, row_a0, row_a1 = rows
+        first = row_g00 * first_rhs - row_a0 * previous_last
+        last = (
+            row_g10 * first_rhs + last_rhs - row_a1 * previous_last
+        )
+        return last, (first, last)
+
+    _, (forward_first, forward_last) = jax.lax.scan(
+        forward,
+        zero,
+        (*interface_rhs, g00, g10, a0, a1),
+    )
+
+    def backward(next_first, rows):
+        first_value, last_value, row_c0, row_c1 = rows
+        first = first_value - row_c0 * next_first
+        last = last_value - row_c1 * next_first
+        return first, (first, last)
+
+    _, reversed_interface = jax.lax.scan(
+        backward,
+        zero,
+        (
+            forward_first[::-1],
+            forward_last[::-1],
+            c0[::-1],
+            c1[::-1],
+        ),
+    )
+    interface_first, interface_last = (
+        values[::-1] for values in reversed_interface
+    )
+    previous_last = jnp.concatenate(
+        (jnp.zeros_like(interface_last[:1]), interface_last[:-1]), axis=0
+    )
+    next_first = jnp.concatenate(
+        (interface_first[1:], jnp.zeros_like(interface_first[:1])), axis=0
+    )
+    blocked_solution = (
+        local_solution
+        - left_spike * previous_last[None]
+        - right_spike * next_first[None]
+    )
+    return blocked_solution.swapaxes(0, 1).reshape(right_hand_side.shape)
+
+
 def build_fft_solver(
     grid: Grid,
     *,
     dtype: str = "float64",
+    method: str = "thomas",
+    thomas_chunk: int = 16,
+    spike_block_size: int = 32,
 ) -> LinearSolver:
     """Solve with a horizontal FFT and batched vertical tridiagonal solves.
 
     The mesh is periodic in x and y and Neumann in z, so a real 2-D FFT
     diagonalises the uniform horizontal part exactly. Each horizontal mode
-    leaves one ``nz x nz`` Neumann tridiagonal system, solved directly by
-    vectorized Thomas sweeps.
+    leaves one ``nz x nz`` Neumann tridiagonal system. ``method="thomas"``
+    uses a pre-factored chunked Thomas sweep; ``method="spike"`` splits that
+    sweep into independent vertical blocks and reconnects their two endpoint
+    values with a structured reduced solve. Both paths use the custom Thomas
+    kernel and never call JAX's built-in tridiagonal solver.
 
     Horizontal stretching is incompatible with Fourier diagonalisation.
     Vertical stretching is supported because it only changes the coefficients
@@ -452,6 +726,16 @@ def build_fft_solver(
     """
     nx, ny, nz = grid.nx, grid.ny, grid.nz
     resolved = np.dtype(dtype)
+    if method not in {"thomas", "spike"}:
+        raise ValueError("FFT method must be 'thomas' or 'spike'")
+    if thomas_chunk <= 0:
+        raise ValueError("thomas_chunk must be positive")
+    if spike_block_size < 2:
+        raise ValueError("spike_block_size must be at least two")
+    if method == "spike" and nz % spike_block_size:
+        raise ValueError(
+            "spike_block_size must divide the number of vertical cells"
+        )
     uniform_x = np.allclose(
         grid.x_widths, grid.x_widths[0], rtol=1.0e-13, atol=0.0
     )
@@ -509,44 +793,57 @@ def build_fft_solver(
     horizontal_weight = jnp.asarray(horizontal_weight)
     horizontal = jnp.asarray(horizontal, resolved)
 
+    # Use the reference solver's z-first representation. Factors depend only
+    # on the mesh and horizontal wave number, so construct them once rather
+    # than rebuilding the diagonal inside every pressure solve.
+    diagonal = (
+        vertical_diagonal[:, None, None]
+        + horizontal_weight[:, None, None] * horizontal[None, :, :]
+    )
+    lower = jnp.broadcast_to(lower_z[:, None, None], diagonal.shape)
+    upper = jnp.broadcast_to(upper_z[:, None, None], diagonal.shape)
+
+    # The sole singular system is the horizontally constant mode. Pin its
+    # first vertical unknown; compatibility makes the omitted equation
+    # redundant, and PressurePoisson restores the zero-mean gauge.
+    diagonal = diagonal.at[0, 0, 0].set(1.0)
+    upper = upper.at[0, 0, 0].set(0.0)
+    if method == "thomas":
+        inverse_diagonal, gamma = _thomas_factor_arrays(
+            lower,
+            diagonal,
+            upper,
+        )
+        factors = None
+    else:
+        inverse_diagonal = gamma = None
+        factors = _build_spike_factors(
+            lower,
+            diagonal,
+            upper,
+            block_size=spike_block_size,
+            thomas_chunk=thomas_chunk,
+        )
+
     def solve(right_hand_side: jnp.ndarray) -> jnp.ndarray:
         field = right_hand_side.reshape(nz, ny, nx)
         spectrum = jnp.fft.rfft2(field, axes=(1, 2))
-        spectrum = spectrum.transpose(1, 2, 0)
-        diagonal = (
-            vertical_diagonal[None, None, :]
-            + horizontal[:, :, None] * horizontal_weight[None, None, :]
-        )
-        lower = jnp.broadcast_to(
-            lower_z[None, None, :], diagonal.shape
-        )
-        upper = jnp.broadcast_to(
-            upper_z[None, None, :], diagonal.shape
-        )
-
-        # The sole singular system is the horizontally constant mode. Pin its
-        # first vertical unknown; compatibility makes the omitted equation
-        # redundant, and PressurePoisson restores the zero-mean gauge.
         spectrum = spectrum.at[0, 0, 0].set(0.0)
-        diagonal = diagonal.at[0, 0, 0].set(1.0)
-        upper = upper.at[0, 0, 0].set(0.0)
-        # The tridiagonal matrix is real, so solve the real and imaginary
-        # Fourier components independently.  Besides being mathematically
-        # equivalent to a complex solve, this is portable to GPU backends
-        # (including ROCm) where JAX only implements tridiagonal_solve for
-        # float32 and float64 operands.
-        def solve_component(component: jnp.ndarray) -> jnp.ndarray:
-            return jax.lax.linalg.tridiagonal_solve(
+        if method == "thomas":
+            solution_spectrum = _chunked_thomas_solve(
                 lower,
-                diagonal,
-                upper,
-                component[..., None],
-            )[..., 0]
-
-        solution_spectrum = (
-            solve_component(jnp.real(spectrum))
-            + 1j * solve_component(jnp.imag(spectrum))
-        ).transpose(2, 0, 1)
+                inverse_diagonal,
+                gamma,
+                spectrum,
+                chunk=thomas_chunk,
+            )
+        else:
+            solution_spectrum = _spike_solve(
+                factors,
+                spectrum,
+                block_size=spike_block_size,
+                thomas_chunk=thomas_chunk,
+            )
         solution = jnp.fft.irfft2(
             solution_spectrum, s=(ny, nx), axes=(1, 2)
         )

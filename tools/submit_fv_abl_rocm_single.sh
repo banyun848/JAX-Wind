@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jaxwind-fv
-#SBATCH --partition=hx1hdnormal
+#SBATCH --partition=hx1hdnormal01
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8

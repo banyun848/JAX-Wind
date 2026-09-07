@@ -30,6 +30,9 @@ class FiniteVolumeOptions:
     wall_averaging: str = "local"
     wall_gradient_correction: bool = False
     cfl_ceiling: float | None = None
+    fft_method: str = "thomas"
+    fft_thomas_chunk: int = 16
+    fft_spike_block_size: int = 32
     gmg_tolerance: float | None = None
     gmg_presweeps: int = 2
     gmg_postsweeps: int = 2
@@ -103,6 +106,9 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
         "scalar_advection_scheme",
         "wall_averaging",
         "wall_gradient_correction",
+        "fft_method",
+        "fft_thomas_chunk",
+        "fft_spike_block_size",
     }
     unknown = table.keys() - expected - optional
     if missing:
@@ -153,6 +159,21 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
             _positive_number(table, "cfl_ceiling")
             if "cfl_ceiling" in table
             else None
+        ),
+        fft_method=_choice(
+            table.get("fft_method", "thomas"),
+            {"spike", "thomas"},
+            "fft_method",
+        ),
+        fft_thomas_chunk=(
+            _positive_integer(table, "fft_thomas_chunk")
+            if "fft_thomas_chunk" in table
+            else 16
+        ),
+        fft_spike_block_size=(
+            _positive_integer(table, "fft_spike_block_size")
+            if "fft_spike_block_size" in table
+            else 32
         ),
         gmg_tolerance=(
             _positive_number(table, "gmg_tolerance")

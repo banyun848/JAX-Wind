@@ -50,6 +50,33 @@ class FftConfigurationTest(unittest.TestCase):
         poisson = build_pressure_poisson(grid, backend="fft")
         self.assertIsNone(poisson.matrix.reference_cell)
 
+    def test_thomas_chunk_must_be_positive(self) -> None:
+        grid = UniformGrid(4, 4, 4, 1.0, 1.0, 1.0)
+        with self.assertRaisesRegex(ValueError, "thomas_chunk"):
+            build_pressure_poisson(
+                grid,
+                backend="fft",
+                config={"thomas_chunk": 0},
+            )
+
+    def test_method_must_be_supported(self) -> None:
+        grid = UniformGrid(4, 4, 4, 1.0, 1.0, 1.0)
+        with self.assertRaisesRegex(ValueError, "FFT method"):
+            build_pressure_poisson(
+                grid,
+                backend="fft",
+                config={"method": "pcr"},
+            )
+
+    def test_spike_block_size_must_divide_vertical_cells(self) -> None:
+        grid = UniformGrid(4, 4, 6, 1.0, 1.0, 1.0)
+        with self.assertRaisesRegex(ValueError, "spike_block_size"):
+            build_pressure_poisson(
+                grid,
+                backend="fft",
+                config={"method": "spike", "spike_block_size": 4},
+            )
+
 
 class FftSolveTest(unittest.TestCase):
     def test_solution_reproduces_a_manufactured_right_hand_side(self) -> None:
@@ -99,6 +126,46 @@ class FftSolveTest(unittest.TestCase):
         scale = float(jnp.max(jnp.abs(reference)))
         self.assertGreater(scale, 0.0)
         self.assertLess(float(jnp.max(jnp.abs(fft - reference))), 1.0e-8 * scale)
+
+    def test_chunked_thomas_variants_are_equivalent(self) -> None:
+        grid = UniformGrid(6, 8, 5, 1.2, 1.6, 1.0)
+        velocity = random_velocity(grid, 18)
+        right_hand_side = divergence(velocity, grid)
+        solutions = [
+            build_pressure_poisson(
+                grid,
+                backend="fft",
+                config={"thomas_chunk": chunk},
+            ).solve(right_hand_side)
+            for chunk in (1, 4, 16)
+        ]
+        for solution in solutions[1:]:
+            self.assertLess(
+                float(jnp.max(jnp.abs(solution - solutions[0]))),
+                1.0e-12,
+            )
+
+    def test_spike_agrees_with_thomas(self) -> None:
+        grid = UniformGrid(10, 8, 8, 1.5, 1.25, 1.0)
+        right_hand_side = divergence(random_velocity(grid, 23), grid)
+        thomas = build_pressure_poisson(
+            grid,
+            backend="fft",
+            config={"method": "thomas", "thomas_chunk": 4},
+        ).solve(right_hand_side)
+        spike = build_pressure_poisson(
+            grid,
+            backend="fft",
+            config={
+                "method": "spike",
+                "thomas_chunk": 4,
+                "spike_block_size": 4,
+            },
+        ).solve(right_hand_side)
+        self.assertLess(
+            float(jnp.max(jnp.abs(spike - thomas))),
+            1.0e-11,
+        )
 
     def test_a_single_vertical_cell_is_handled(self) -> None:
         grid = UniformGrid(4, 4, 1, 1.0, 1.0, 1.0)

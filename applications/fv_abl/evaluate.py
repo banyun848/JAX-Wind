@@ -91,6 +91,9 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         "discretization": "staggered finite volume",
         "time_integration": options.time_integration.upper(),
         "pressure_backend": options.pressure_backend,
+        "fft_method": options.fft_method,
+        "fft_thomas_chunk": options.fft_thomas_chunk,
+        "fft_spike_block_size": options.fft_spike_block_size,
         "momentum_closure": "AnisotropicMinimumDissipation",
         "scalar_closure": "eddy diffusivity",
         "turbulent_prandtl": options.turbulent_prandtl,
@@ -268,7 +271,7 @@ def evaluate(
     u, v, w, scalar_field = initial_fields(case, jax, jnp)
     offset_u, offset_v = case.advection_frame_velocity_m_s
     velocity = StaggeredVelocity(u - offset_u, v - offset_v, w)
-    gmg_config = (
+    solver_config = (
         {
             "presweeps": options.gmg_presweeps,
             "postsweeps": options.gmg_postsweeps,
@@ -280,13 +283,17 @@ def evaluate(
             ),
         }
         if options.pressure_backend == "gmg"
-        else None
+        else {
+            "method": options.fft_method,
+            "thomas_chunk": options.fft_thomas_chunk,
+            "spike_block_size": options.fft_spike_block_size,
+        }
     )
     poisson = build_pressure_poisson(
         grid,
         backend=options.pressure_backend,
         dtype=case.dtype,
-        config=gmg_config,
+        config=solver_config,
     )
     velocity, _ = project(velocity, poisson, 1.0)
     boundaries = monin_obukhov_boundaries()

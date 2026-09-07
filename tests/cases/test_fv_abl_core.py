@@ -63,6 +63,26 @@ def test_pressure_backend_is_a_one_option_switch(tmp_path: Path) -> None:
     assert fft.options.output_directory.name == "andren1994_fv_fft_40x40x40"
 
 
+def test_fft_tridiagonal_method_is_configurable(tmp_path: Path) -> None:
+    text = CONFIGS[0].read_text(encoding="utf-8")
+    configured = tmp_path / "spike.toml"
+    configured.write_text(
+        text.replace(
+            'pressure_backend = "gmg"',
+            'pressure_backend = "fft"\n'
+            'fft_method = "spike"\n'
+            'fft_thomas_chunk = 8\n'
+            'fft_spike_block_size = 20',
+        ),
+        encoding="utf-8",
+    )
+    case = load_fv_abl(configured)
+    assert case.options.fft_method == "spike"
+    assert case.options.fft_thomas_chunk == 8
+    assert case.options.fft_spike_block_size == 20
+    assert resolved(case)["fft_method"] == "spike"
+
+
 def test_adaptive_rk_options_are_configuration_only(tmp_path: Path) -> None:
     text = CONFIGS[0].read_text(encoding="utf-8")
     configured = tmp_path / "adaptive.toml"

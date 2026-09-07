@@ -135,6 +135,7 @@ class FiniteVolumeWorkflow:
             "case": resolved(self.case),
             "warmup": {
                 "pressure_backend": "fft",
+                "fft_method": self.case.options.fft_method,
                 "periodic_x": True,
                 "steps": self.options.warmup_steps,
                 "duration_seconds": (
@@ -151,6 +152,7 @@ class FiniteVolumeWorkflow:
             },
             "precursor": {
                 "pressure_backend": "fft",
+                "fft_method": self.case.options.fft_method,
                 "periodic_x": True,
                 "steps": self.options.precursor_steps,
                 "duration_seconds": (
@@ -954,7 +956,22 @@ def _combine_forcings(*forcings):
     return combined
 
 
-def _initial_periodic(configured: FiniteVolumeCase, jax, jnp):
+def _fft_solver_config(configured: FiniteVolumeCase) -> dict[str, Any]:
+    options = configured.options
+    return {
+        "method": options.fft_method,
+        "thomas_chunk": options.fft_thomas_chunk,
+        "spike_block_size": options.fft_spike_block_size,
+    }
+
+
+def _initial_periodic(
+    configured: FiniteVolumeCase,
+    jax,
+    jnp,
+    *,
+    fft_config: dict[str, Any] | None = None,
+):
     from jaxwind import (
         StaggeredVelocity,
         build_pressure_poisson,
@@ -971,6 +988,11 @@ def _initial_periodic(configured: FiniteVolumeCase, jax, jnp):
         grid,
         backend="fft",
         dtype=case.dtype,
+        config=(
+            _fft_solver_config(configured)
+            if fft_config is None
+            else fft_config
+        ),
     )
     velocity, _ = project(velocity, poisson, 1.0)
     return initial_atmospheric_solution(
@@ -981,7 +1003,11 @@ def _initial_periodic(configured: FiniteVolumeCase, jax, jnp):
     )
 
 
-def _periodic_advance(configured: FiniteVolumeCase):
+def _periodic_advance(
+    configured: FiniteVolumeCase,
+    *,
+    fft_config: dict[str, Any] | None = None,
+):
     from jaxwind import (
         build_atmospheric_run,
         build_atmospheric_step,
@@ -997,6 +1023,11 @@ def _periodic_advance(configured: FiniteVolumeCase):
         grid,
         backend="fft",
         dtype=case.dtype,
+        config=(
+            _fft_solver_config(configured)
+            if fft_config is None
+            else fft_config
+        ),
     )
     step = build_atmospheric_step(
         grid,
@@ -1242,6 +1273,7 @@ def run_warmup(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         "maximum_dt_seconds": case.dt_seconds,
         "cfl_ceiling": options.cfl_ceiling,
         "pressure_backend": "fft",
+        "fft_method": options.fft_method,
         "time_integration": options.time_integration,
         "restart_checkpoint": None if restart is None else str(restart),
         "start_time_seconds": initial_time,
