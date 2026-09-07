@@ -1,5 +1,5 @@
 [case]
-name = "hitsz_r9_fv_warmup_256x64x128"
+name = "hitsz_r9_fv_warmup_256x64x128_porte_agel_1800s"
 citation = "Yang, Lin & Zhou, Renewable Energy 220 (2024), 119625"
 initial_profile = "fv_initial_profile.csv"
 reference_results = "fv_reference_results.json"
@@ -25,7 +25,7 @@ buoyancy_acceleration_per_unit = 0.0
 
 [time]
 dt_seconds = 0.02
-steps = 45000
+steps = 90000
 
 
 [numerics]
@@ -46,12 +46,13 @@ pressure_backend = "fft"
 time_integration = "fast-rk3"
 cfl_ceiling = 1.0
 turbulent_prandtl = 0.4
+wall_gradient_correction = true
 chunk_steps = 100
 spectrum_diagnostic = "none"
-output_directory = "outputs/hitsz_r9_fv_fft_fast_rk3_256x64x128"
+output_directory = "outputs/hitsz_r9_fv_fft_fast_rk3_256x64x128_porte_agel_1800s"
 
 [finite_volume_workflow]
-warmup_steps = 45000
+warmup_steps = 90000
 precursor_steps = 8000
 main_steps = 8000
 record_plane = 10
@@ -59,7 +60,7 @@ precursor_dt_seconds = 0.01125
 main_dt_seconds = 0.01125
 main_frame_count = 100
 chunk_steps = 100
-output_directory = "outputs/hitsz_r9_fv_workflow_256x64x128"
+output_directory = "outputs/hitsz_r9_fv_workflow_256x64x128_porte_agel_1800s"
 main_pressure_force = false
 evolve_scalar = false
 

@@ -516,13 +516,13 @@ def build_fft_solver(
         diagonal = (
             vertical_diagonal[None, None, :]
             + horizontal[:, :, None] * horizontal_weight[None, None, :]
-        ).astype(spectrum.dtype)
+        )
         lower = jnp.broadcast_to(
             lower_z[None, None, :], diagonal.shape
-        ).astype(spectrum.dtype)
+        )
         upper = jnp.broadcast_to(
             upper_z[None, None, :], diagonal.shape
-        ).astype(spectrum.dtype)
+        )
 
         # The sole singular system is the horizontally constant mode. Pin its
         # first vertical unknown; compatibility makes the omitted equation
@@ -530,12 +530,23 @@ def build_fft_solver(
         spectrum = spectrum.at[0, 0, 0].set(0.0)
         diagonal = diagonal.at[0, 0, 0].set(1.0)
         upper = upper.at[0, 0, 0].set(0.0)
-        solution_spectrum = jax.lax.linalg.tridiagonal_solve(
-            lower,
-            diagonal,
-            upper,
-            spectrum[..., None],
-        )[..., 0].transpose(2, 0, 1)
+        # The tridiagonal matrix is real, so solve the real and imaginary
+        # Fourier components independently.  Besides being mathematically
+        # equivalent to a complex solve, this is portable to GPU backends
+        # (including ROCm) where JAX only implements tridiagonal_solve for
+        # float32 and float64 operands.
+        def solve_component(component: jnp.ndarray) -> jnp.ndarray:
+            return jax.lax.linalg.tridiagonal_solve(
+                lower,
+                diagonal,
+                upper,
+                component[..., None],
+            )[..., 0]
+
+        solution_spectrum = (
+            solve_component(jnp.real(spectrum))
+            + 1j * solve_component(jnp.imag(spectrum))
+        ).transpose(2, 0, 1)
         solution = jnp.fft.irfft2(
             solution_spectrum, s=(ny, nx), axes=(1, 2)
         )
