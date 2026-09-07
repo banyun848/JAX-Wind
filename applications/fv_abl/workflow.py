@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,25 @@ except ModuleNotFoundError:  # Python 3.10
 from .config import FiniteVolumeCase, load_fv_abl
 from .diagnostics import initial_fields
 from .evaluate import resolved
+
+
+def _estimated_finish(
+    started: float,
+    completed: float,
+    total: float,
+) -> str:
+    """Format a cumulative-throughput estimate of remaining wall time."""
+    elapsed = max(time.perf_counter() - started, 0.0)
+    progress = min(max(completed, 0.0), total)
+    remaining = 0.0 if progress >= total else elapsed * (total - progress) / progress
+    rounded = max(0, round(remaining))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    finish = datetime.now().astimezone() + timedelta(seconds=remaining)
+    return (
+        f"finish {finish.isoformat(timespec='seconds')} "
+        f"remaining {hours:d}:{minutes:02d}:{seconds:02d}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1118,7 +1138,8 @@ def _run_periodic_blocks(
         final_cfl = float(courant_number(solution.velocity, grid, dt))
         maximum_cfl = max(maximum_cfl, final_cfl)
         print(
-            f"periodic {completed:8d}/{steps} CFL {final_cfl:.3f}",
+            f"periodic {completed:8d}/{steps} CFL {final_cfl:.3f} "
+            f"{_estimated_finish(started, completed, steps)}",
             flush=True,
         )
     return solution, time.perf_counter() - started, final_cfl, maximum_cfl
@@ -1174,10 +1195,15 @@ def _run_adaptive_periodic_blocks(
         )
         next_cfl = float(courant_number(solution.velocity, grid, next_dt))
         maximum_sampled_cfl = max(maximum_sampled_cfl, next_cfl)
+        finish = _estimated_finish(
+            started,
+            after_time - initial_time,
+            duration_seconds,
+        )
         print(
             f"periodic step {after_step:8d} "
             f"time {after_time:9.3f}/{target_time:.3f} s "
-            f"dt {next_dt:.6f} CFL {next_cfl:.3f}",
+            f"dt {next_dt:.6f} CFL {next_cfl:.3f} {finish}",
             flush=True,
         )
     statistics = {
@@ -1464,7 +1490,8 @@ def run_precursor(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, An
             f"precursor {completed:8d}/{samples} "
             f"time {float(solution.time) - initial_time:8.3f}/"
             f"{duration_seconds:.3f}s frames {len(frames)}/"
-            f"{len(frame_steps)}",
+            f"{len(frame_steps)} "
+            f"{_estimated_finish(started, completed, samples)}",
             flush=True,
         )
     recording_elapsed = time.perf_counter() - started
@@ -1867,7 +1894,8 @@ def run_main(workflow: FiniteVolumeWorkflow, *, steps: int) -> dict[str, Any]:
         print(
             f"main {completed:8d}/{steps} div {maximum_divergence:.3e} "
             f"rate {block_steps[-1] / block_elapsed[-1]:.1f} step/s "
-            f"frames {len(frames)}/{len(frame_steps)}",
+            f"frames {len(frames)}/{len(frame_steps)} "
+            f"{_estimated_finish(started, completed, steps)}",
             flush=True,
         )
     elapsed = time.perf_counter() - started

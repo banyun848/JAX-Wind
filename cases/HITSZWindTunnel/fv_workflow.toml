@@ -56,8 +56,8 @@ output_directory = "outputs/hitsz_r9_fv_fft_fast_rk3_256x64x128_porte_agel_1800s
 
 [finite_volume_workflow]
 warmup_steps = 90000
-precursor_steps = 8000
-main_steps = 8000
+precursor_steps = 16000
+main_steps = 16000
 record_plane = 10
 precursor_dt_seconds = 0.01125
 main_dt_seconds = 0.01125
