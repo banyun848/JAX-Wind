@@ -126,6 +126,11 @@ the step into CFL selection, lagged pressure gradient, three explicit
 tendency/RK updates, and the FFT projection, then drills into momentum, AMD,
 scalar, and projection operators. Components are separately synchronized, so
 their sum is diagnostic rather than an additive prediction of fused execution.
+The detailed momentum table compares the production fused RHS with variants
+that remove the body force or log-law gradient correction, an advection-plus-
+AMD fusion, and addition of precomputed fields. Separate AMD and scalar tables
+materialize internal phase boundaries to expose backend-specific fusion and
+memory-traffic costs.
 
 The runner independently resumes interrupted coarse and fine warmups, records
 the precursor, executes the main turbine run, creates 100 frames, and overlays

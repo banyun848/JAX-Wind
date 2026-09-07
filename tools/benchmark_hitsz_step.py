@@ -9,7 +9,7 @@ their sum is not expected to equal the fused end-to-end execution time.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -113,6 +113,21 @@ def _as_report(value: Measurement, *, unit: str) -> dict[str, Any]:
     return result
 
 
+def _profile_report(
+    measurements: dict[str, Measurement],
+    *,
+    baseline: str,
+) -> dict[str, dict[str, Any]]:
+    baseline_ms = measurements[baseline].median_ms
+    return {
+        name: {
+            **_as_report(value, unit="ms/call"),
+            "percent_of_parent": 100.0 * value.median_ms / baseline_ms,
+        }
+        for name, value in measurements.items()
+    }
+
+
 def _environment(jax, jaxlib) -> dict[str, Any]:
     names = (
         "JAX_PLATFORMS",
@@ -183,14 +198,17 @@ def main(argv: list[str] | None = None) -> int:
         build_tendency,
         divergence,
         eddy_viscosity,
+        edge_gradients,
         enforce_impermeability,
         pressure_gradient,
         project,
         scalar_tendency,
         stable_timestep,
+        stress_divergence,
         subfilter_tendency,
         wall_tendency,
     )
+    from jaxwind.wall import log_law_gradient_correction
 
     workflow = load_workflow(config_path)
     configured = workflow.case
@@ -215,8 +233,14 @@ def main(argv: list[str] | None = None) -> int:
     boundaries, momentum, scalar, buoyancy, coupled_surface = _models(
         configured, periodic_x=True
     )
-    if scalar is None or momentum.subfilter is None:
-        raise ValueError("the HITSZ decomposition requires scalar and SGS models")
+    if (
+        scalar is None
+        or momentum.subfilter is None
+        or momentum.surface is None
+    ):
+        raise ValueError(
+            "the HITSZ decomposition requires scalar, SGS, and wall models"
+        )
     if buoyancy is not None or coupled_surface is not None:
         raise ValueError(
             "the benchmark currently targets the neutral HITSZ warmup closures"
@@ -282,6 +306,90 @@ def main(argv: list[str] | None = None) -> int:
         config=fft_config,
     )
     momentum_rhs = build_tendency(grid, boundaries, momentum)
+    momentum_without_body_rhs = build_tendency(
+        grid,
+        boundaries,
+        replace(momentum, body_force=(0.0, 0.0, 0.0)),
+    )
+    uncorrected_surface = replace(
+        momentum.surface,
+        gradient_correction=False,
+    )
+    momentum_without_gradient_correction_rhs = build_tendency(
+        grid,
+        boundaries,
+        replace(momentum, surface=uncorrected_surface),
+    )
+
+    def add_velocity(left, right):
+        return StaggeredVelocity(
+            left.x + right.x,
+            left.y + right.y,
+            left.z + right.z,
+        )
+
+    def body_force_only(velocity):
+        force_x, force_y, force_z = momentum.body_force
+        wall = jnp.zeros_like(velocity.z[:1])
+        interior = jnp.full_like(velocity.z[1:-1], force_z)
+        return StaggeredVelocity(
+            jnp.full_like(velocity.x, force_x),
+            jnp.full_like(velocity.y, force_y),
+            jnp.concatenate((wall, interior, wall), axis=0),
+        )
+
+    def advection_plus_amd(velocity):
+        subfilter, _ = subfilter_tendency(
+            velocity,
+            grid,
+            boundaries,
+            momentum.subfilter,
+            surface=momentum.surface,
+        )
+        return add_velocity(advection(velocity, grid), subfilter)
+
+    def add_precomputed_momentum(advection_value, force, wall, subfilter):
+        return add_velocity(
+            add_velocity(add_velocity(advection_value, force), wall),
+            subfilter,
+        )
+
+    def correct_gradients(velocity, gradients):
+        if not momentum.surface.gradient_correction:
+            return gradients
+        return log_law_gradient_correction(
+            gradients,
+            velocity,
+            grid,
+            momentum.surface,
+        )
+
+    def viscosity_from_gradients(velocity, gradients):
+        return eddy_viscosity(
+            velocity,
+            grid,
+            boundaries,
+            momentum.subfilter,
+            gradients=gradients,
+        )
+
+    def stress_from_gradients(velocity, viscosity, gradients):
+        return stress_divergence(
+            velocity,
+            viscosity,
+            grid,
+            boundaries,
+            gradients=gradients,
+        )
+
+    def scalar_with_viscosity(velocity, scalar_field, viscosity):
+        return scalar_tendency(
+            scalar_field,
+            velocity,
+            grid,
+            scalar,
+            eddy_viscosity=viscosity,
+        )
 
     def scalar_rhs(velocity, scalar_field):
         viscosity = eddy_viscosity(
@@ -304,8 +412,22 @@ def main(argv: list[str] | None = None) -> int:
     lagged_kernel = jax.jit(lambda pressure: pressure_gradient(pressure, grid))
     explicit_kernel = jax.jit(explicit_rhs)
     momentum_kernel = jax.jit(momentum_rhs)
+    momentum_without_body_kernel = jax.jit(momentum_without_body_rhs)
+    momentum_without_gradient_correction_kernel = jax.jit(
+        momentum_without_gradient_correction_rhs
+    )
     scalar_kernel = jax.jit(scalar_rhs)
     advection_kernel = jax.jit(lambda velocity: advection(velocity, grid))
+    body_force_kernel = jax.jit(body_force_only)
+    advection_plus_amd_kernel = jax.jit(advection_plus_amd)
+    precomputed_momentum_sum_kernel = jax.jit(add_precomputed_momentum)
+    gradient_kernel = jax.jit(
+        lambda velocity: edge_gradients(velocity, grid, boundaries)
+    )
+    gradient_correction_kernel = jax.jit(correct_gradients)
+    viscosity_from_gradients_kernel = jax.jit(viscosity_from_gradients)
+    stress_from_gradients_kernel = jax.jit(stress_from_gradients)
+    scalar_with_viscosity_kernel = jax.jit(scalar_with_viscosity)
     sgs_kernel = jax.jit(
         lambda velocity: subfilter_tendency(
             velocity,
@@ -315,9 +437,26 @@ def main(argv: list[str] | None = None) -> int:
             surface=momentum.surface,
         )
     )
+    sgs_without_gradient_correction_kernel = jax.jit(
+        lambda velocity: subfilter_tendency(
+            velocity,
+            grid,
+            boundaries,
+            momentum.subfilter,
+            surface=uncorrected_surface,
+        )
+    )
     viscosity_kernel = jax.jit(
         lambda velocity: eddy_viscosity(
             velocity, grid, boundaries, momentum.subfilter
+        )
+    )
+    scalar_without_viscosity_kernel = jax.jit(
+        lambda velocity, scalar_field: scalar_tendency(
+            scalar_field,
+            velocity,
+            grid,
+            scalar,
         )
     )
     wall_kernel = (
@@ -457,6 +596,121 @@ def main(argv: list[str] | None = None) -> int:
             repeats=arguments.component_repeats,
         )
 
+    momentum_profile: dict[str, Measurement] = {
+        "full_combined_rhs": drilldown["combined_momentum_rhs"],
+        "advection_only": drilldown["momentum_advection"],
+        "amd_only": drilldown["amd_subfilter"],
+        "wall_only": drilldown["wall_stress"],
+    }
+    momentum_profile["body_force_materialization"], force_value = _measure(
+        jax,
+        lambda: body_force_kernel(solution.velocity),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    momentum_profile["rhs_without_body_force"], _ = _measure(
+        jax,
+        lambda: momentum_without_body_kernel(
+            solution.velocity, solution.time
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    momentum_profile["rhs_without_gradient_correction"], _ = _measure(
+        jax,
+        lambda: momentum_without_gradient_correction_kernel(
+            solution.velocity, solution.time
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    momentum_profile["fused_advection_plus_amd"], _ = _measure(
+        jax,
+        lambda: advection_plus_amd_kernel(solution.velocity),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    advection_value = _ready(jax, advection_kernel(solution.velocity))
+    subfilter_value, _ = _ready(jax, sgs_kernel(solution.velocity))
+    wall_value = _ready(jax, wall_kernel(solution.velocity))
+    momentum_profile["precomputed_field_sum"], _ = _measure(
+        jax,
+        lambda: precomputed_momentum_sum_kernel(
+            advection_value,
+            force_value,
+            wall_value,
+            subfilter_value,
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+
+    amd_profile: dict[str, Measurement] = {
+        "full_fused_subfilter": drilldown["amd_subfilter"],
+    }
+    amd_profile["edge_gradients"], raw_gradients = _measure(
+        jax,
+        lambda: gradient_kernel(solution.velocity),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    amd_profile["log_law_gradient_correction"], corrected_gradients = _measure(
+        jax,
+        lambda: gradient_correction_kernel(
+            solution.velocity, raw_gradients
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    amd_profile["viscosity_from_gradients"], corrected_viscosity = _measure(
+        jax,
+        lambda: viscosity_from_gradients_kernel(
+            solution.velocity, corrected_gradients
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    amd_profile["stress_divergence_from_fields"], _ = _measure(
+        jax,
+        lambda: stress_from_gradients_kernel(
+            solution.velocity,
+            corrected_viscosity,
+            corrected_gradients,
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    amd_profile["subfilter_no_gradient_fix"], _ = _measure(
+        jax,
+        lambda: sgs_without_gradient_correction_kernel(solution.velocity),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+
+    scalar_profile: dict[str, Measurement] = {
+        "viscosity_plus_transport": drilldown["scalar_transport"],
+        "eddy_viscosity_only": drilldown["eddy_viscosity_for_scalar"],
+    }
+    scalar_viscosity = _ready(jax, viscosity_kernel(solution.velocity))
+    scalar_profile["transport_precomputed_viscosity"], _ = _measure(
+        jax,
+        lambda: scalar_with_viscosity_kernel(
+            solution.velocity,
+            solution.scalar,
+            scalar_viscosity,
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+    scalar_profile["transport_no_eddy_viscosity"], _ = _measure(
+        jax,
+        lambda: scalar_without_viscosity_kernel(
+            solution.velocity, solution.scalar
+        ),
+        samples=arguments.samples,
+        repeats=arguments.component_repeats,
+    )
+
     calls_per_step = {
         "cfl_control": 1,
         "lagged_pressure_gradient": 1,
@@ -510,11 +764,25 @@ def main(argv: list[str] | None = None) -> int:
             name: _as_report(value, unit="ms/call")
             for name, value in drilldown.items()
         },
+        "momentum_profile": _profile_report(
+            momentum_profile,
+            baseline="full_combined_rhs",
+        ),
+        "amd_profile": _profile_report(
+            amd_profile,
+            baseline="full_fused_subfilter",
+        ),
+        "scalar_profile": _profile_report(
+            scalar_profile,
+            baseline="viscosity_plus_transport",
+        ),
         "notes": [
             "End-to-end timings synchronize once per production-style block.",
             "Component timings synchronize each call and prevent phase fusion.",
             "Decomposition totals need not equal end-to-end time.",
             "RHS and projection drilldowns overlap their parent measurements.",
+            "Detailed profiles materialize boundaries between subphases.",
+            "Profile percentages are relative to each section's fused parent.",
         ],
     }
 
@@ -571,6 +839,36 @@ def main(argv: list[str] | None = None) -> int:
             for name, value in drilldown.items()
         ],
     )
+    for title, measurements, baseline in (
+        (
+            "Momentum composition (relative to full momentum RHS)",
+            momentum_profile,
+            "full_combined_rhs",
+        ),
+        (
+            "AMD decomposition (relative to fused AMD)",
+            amd_profile,
+            "full_fused_subfilter",
+        ),
+        (
+            "Scalar decomposition (relative to fused scalar RHS)",
+            scalar_profile,
+            "viscosity_plus_transport",
+        ),
+    ):
+        baseline_ms = measurements[baseline].median_ms
+        _print_table(
+            title,
+            [
+                (
+                    name,
+                    value.median_ms,
+                    100.0 * value.median_ms / baseline_ms,
+                    value.compile_seconds,
+                )
+                for name, value in measurements.items()
+            ],
+        )
     print(
         "\nNote: separately synchronized component timings locate regressions; "
         "they are not an additive model of fused execution."
