@@ -12,7 +12,10 @@ from typing import Any
 
 import numpy as np
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from .config import FiniteVolumeCase, load_fv_abl
 from .diagnostics import initial_fields
