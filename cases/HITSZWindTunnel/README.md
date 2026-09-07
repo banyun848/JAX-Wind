@@ -106,6 +106,21 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
   cases/HITSZWindTunnel/fv_workflow.toml --overwrite
 ```
 
+Profile the periodic warmup step with the same HITSZ configuration and write a
+machine-readable report:
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python tools/benchmark_hitsz_step.py \
+  --json hitsz-step-benchmark.json
+```
+
+The benchmark reports production adaptive and fixed-dt throughput, decomposes
+the step into CFL selection, lagged pressure gradient, three explicit
+tendency/RK updates, and the FFT projection, then drills into momentum, AMD,
+scalar, and projection operators. Components are separately synchronized, so
+their sum is diagnostic rather than an additive prediction of fused execution.
+
 The runner independently resumes interrupted coarse and fine warmups, records
 the precursor, executes the main turbine run, creates 100 frames, and overlays
 the resulting wake with the TI-consistent Gaussian model. The two-section
