@@ -247,21 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     step, _ = _periodic_advance(configured, fft_config=fft_config)
-    barrier_step, _ = _periodic_advance(
-        configured,
-        fft_config=fft_config,
-        momentum_barrier_after_advection=True,
-    )
     fixed_run = build_atmospheric_run(step)
-    barrier_fixed_run = build_atmospheric_run(barrier_step)
     adaptive_run = build_adaptive_atmospheric_run(
         step,
-        grid,
-        cfl_ceiling=options.cfl_ceiling,
-        maximum_dt=case.dt_seconds,
-    )
-    barrier_adaptive_run = build_adaptive_atmospheric_run(
-        barrier_step,
         grid,
         cfl_ceiling=options.cfl_ceiling,
         maximum_dt=case.dt_seconds,
@@ -304,35 +292,12 @@ def main(argv: list[str] | None = None) -> int:
         samples=arguments.samples,
         units_per_call=arguments.block_steps,
     )
-    end_to_end["adaptive_advection_barrier"], barrier_adaptive_result = _measure(
-        jax,
-        lambda: barrier_adaptive_run(
-            solution, adaptive_target, arguments.block_steps
-        ),
-        samples=arguments.samples,
-        units_per_call=arguments.block_steps,
-    )
-    end_to_end["fixed_dt_advection_barrier"], _ = _measure(
-        jax,
-        lambda: barrier_fixed_run(
-            solution, stable_dt, arguments.block_steps
-        ),
-        samples=arguments.samples,
-        units_per_call=arguments.block_steps,
-    )
     actual_steps = int(adaptive_result.step) - int(solution.step)
     if actual_steps != arguments.block_steps:
         raise RuntimeError(
             f"adaptive benchmark advanced {actual_steps} steps, expected "
             f"{arguments.block_steps}"
         )
-    barrier_actual_steps = int(barrier_adaptive_result.step) - int(solution.step)
-    if barrier_actual_steps != arguments.block_steps:
-        raise RuntimeError(
-            f"barrier benchmark advanced {barrier_actual_steps} steps, "
-            f"expected {arguments.block_steps}"
-        )
-
     poisson = build_pressure_poisson(
         grid,
         backend="fft",
@@ -340,12 +305,6 @@ def main(argv: list[str] | None = None) -> int:
         config=fft_config,
     )
     momentum_rhs = build_tendency(grid, boundaries, momentum)
-    momentum_barrier_rhs = build_tendency(
-        grid,
-        boundaries,
-        momentum,
-        barrier_after_advection=True,
-    )
     momentum_without_body_rhs = build_tendency(
         grid,
         boundaries,
@@ -379,16 +338,6 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     def advection_plus_amd(velocity):
-        subfilter, _ = subfilter_tendency(
-            velocity,
-            grid,
-            boundaries,
-            momentum.subfilter,
-            surface=momentum.surface,
-        )
-        return add_velocity(advection(velocity, grid), subfilter)
-
-    def advection_barrier_plus_amd(velocity):
         current_advection = advection(velocity, grid)
         current_advection = StaggeredVelocity(
             jax.lax.optimization_barrier(current_advection.x),
@@ -465,17 +414,9 @@ def main(argv: list[str] | None = None) -> int:
             scalar_rhs(velocity, scalar_field),
         )
 
-    def explicit_barrier_rhs(velocity, scalar_field, execution_time):
-        return (
-            momentum_barrier_rhs(velocity, execution_time),
-            scalar_rhs(velocity, scalar_field),
-        )
-
     lagged_kernel = jax.jit(lambda pressure: pressure_gradient(pressure, grid))
     explicit_kernel = jax.jit(explicit_rhs)
-    explicit_barrier_kernel = jax.jit(explicit_barrier_rhs)
     momentum_kernel = jax.jit(momentum_rhs)
-    momentum_barrier_kernel = jax.jit(momentum_barrier_rhs)
     momentum_without_body_kernel = jax.jit(momentum_without_body_rhs)
     momentum_without_gradient_correction_kernel = jax.jit(
         momentum_without_gradient_correction_rhs
@@ -484,9 +425,6 @@ def main(argv: list[str] | None = None) -> int:
     advection_kernel = jax.jit(lambda velocity: advection(velocity, grid))
     body_force_kernel = jax.jit(body_force_only)
     advection_plus_amd_kernel = jax.jit(advection_plus_amd)
-    advection_barrier_plus_amd_kernel = jax.jit(
-        advection_barrier_plus_amd
-    )
     precomputed_momentum_sum_kernel = jax.jit(add_precomputed_momentum)
     gradient_kernel = jax.jit(
         lambda velocity: edge_gradients(velocity, grid, boundaries)
@@ -631,15 +569,6 @@ def main(argv: list[str] | None = None) -> int:
             samples=arguments.samples,
             repeats=arguments.component_repeats,
         )
-    explicit_barrier_measurement, _ = _measure(
-        jax,
-        lambda: explicit_barrier_kernel(
-            solution.velocity, solution.scalar, solution.time
-        ),
-        samples=arguments.samples,
-        repeats=arguments.component_repeats,
-    )
-
     drilldown_functions: dict[str, Callable[[], Any]] = {
         "momentum_advection": lambda: advection_kernel(solution.velocity),
         "amd_subfilter": lambda: sgs_kernel(solution.velocity),
@@ -699,21 +628,9 @@ def main(argv: list[str] | None = None) -> int:
         samples=arguments.samples,
         repeats=arguments.component_repeats,
     )
-    momentum_profile["fused_advection_plus_amd"], _ = _measure(
+    momentum_profile["advection_plus_amd"], _ = _measure(
         jax,
         lambda: advection_plus_amd_kernel(solution.velocity),
-        samples=arguments.samples,
-        repeats=arguments.component_repeats,
-    )
-    momentum_profile["advection_barrier_plus_amd"], _ = _measure(
-        jax,
-        lambda: advection_barrier_plus_amd_kernel(solution.velocity),
-        samples=arguments.samples,
-        repeats=arguments.component_repeats,
-    )
-    momentum_profile["rhs_advection_barrier"], _ = _measure(
-        jax,
-        lambda: momentum_barrier_kernel(solution.velocity, solution.time),
         samples=arguments.samples,
         repeats=arguments.component_repeats,
     )
@@ -797,22 +714,6 @@ def main(argv: list[str] | None = None) -> int:
         samples=arguments.samples,
         repeats=arguments.component_repeats,
     )
-    explicit_fusion_profile = {
-        "production_explicit_rhs": decomposition["explicit_tendencies"],
-        "advection_barrier_explicit_rhs": explicit_barrier_measurement,
-    }
-
-    barrier_differences = [
-        jnp.max(jnp.abs(barrier_leaf - regular_leaf))
-        for barrier_leaf, regular_leaf in zip(
-            jax.tree_util.tree_leaves(barrier_adaptive_result),
-            jax.tree_util.tree_leaves(adaptive_result),
-        )
-    ]
-    barrier_max_abs_difference = max(
-        float(_ready(jax, difference)) for difference in barrier_differences
-    )
-
     calls_per_step = {
         "cfl_control": 1,
         "lagged_pressure_gradient": 1,
@@ -878,19 +779,14 @@ def main(argv: list[str] | None = None) -> int:
             scalar_profile,
             baseline="viscosity_plus_transport",
         ),
-        "explicit_fusion_profile": _profile_report(
-            explicit_fusion_profile,
-            baseline="production_explicit_rhs",
-        ),
-        "barrier_max_abs_solution_difference": barrier_max_abs_difference,
         "notes": [
             "End-to-end timings synchronize once per production-style block.",
             "Component timings synchronize each call and prevent phase fusion.",
             "Decomposition totals need not equal end-to-end time.",
             "RHS and projection drilldowns overlap their parent measurements.",
             "Detailed profiles materialize boundaries between subphases.",
-            "Profile percentages are relative to each section's fused parent.",
-            "The optimization barrier changes compilation only, not equations.",
+            "Profile percentages are relative to each section's parent.",
+            "Momentum advection uses the production optimization barrier.",
         ],
     }
 
@@ -917,22 +813,6 @@ def main(argv: list[str] | None = None) -> int:
                 end_to_end["fixed_dt"].median_ms,
                 100.0 * end_to_end["fixed_dt"].median_ms / full_ms,
                 end_to_end["fixed_dt"].compile_seconds,
-            ),
-            (
-                "adaptive + advection barrier",
-                end_to_end["adaptive_advection_barrier"].median_ms,
-                100.0
-                * end_to_end["adaptive_advection_barrier"].median_ms
-                / full_ms,
-                end_to_end["adaptive_advection_barrier"].compile_seconds,
-            ),
-            (
-                "fixed dt + advection barrier",
-                end_to_end["fixed_dt_advection_barrier"].median_ms,
-                100.0
-                * end_to_end["fixed_dt_advection_barrier"].median_ms
-                / full_ms,
-                end_to_end["fixed_dt_advection_barrier"].compile_seconds,
             ),
         ],
     )
@@ -979,11 +859,6 @@ def main(argv: list[str] | None = None) -> int:
             scalar_profile,
             "viscosity_plus_transport",
         ),
-        (
-            "Explicit fusion barrier experiment",
-            explicit_fusion_profile,
-            "production_explicit_rhs",
-        ),
     ):
         baseline_ms = measurements[baseline].median_ms
         _print_table(
@@ -1002,11 +877,6 @@ def main(argv: list[str] | None = None) -> int:
         "\nNote: separately synchronized component timings locate regressions; "
         "they are not an additive model of fused execution."
     )
-    print(
-        "Barrier maximum absolute solution difference: "
-        f"{barrier_max_abs_difference:.7g}"
-    )
-
     if arguments.json_path is not None:
         arguments.json_path.parent.mkdir(parents=True, exist_ok=True)
         arguments.json_path.write_text(

@@ -126,16 +126,13 @@ the step into CFL selection, lagged pressure gradient, three explicit
 tendency/RK updates, and the FFT projection, then drills into momentum, AMD,
 scalar, and projection operators. Components are separately synchronized, so
 their sum is diagnostic rather than an additive prediction of fused execution.
-The detailed momentum table compares the production fused RHS with variants
-that remove the body force or log-law gradient correction, an advection-plus-
-AMD fusion, and addition of precomputed fields. Separate AMD and scalar tables
+The detailed momentum table compares the production RHS with variants that
+remove the body force or log-law gradient correction, its advection-plus-AMD
+subset, and addition of precomputed fields. Separate AMD and scalar tables
 materialize internal phase boundaries to expose backend-specific fusion and
-memory-traffic costs.
-The runner also executes an opt-in `jax.lax.optimization_barrier` immediately
-after momentum advection. It reports barrier and production timings for the
-full adaptive/fixed workflow, the explicit RHS, the complete momentum RHS,
-and the advection-plus-AMD subset, along with their maximum solution
-difference.
+memory-traffic costs. The production momentum RHS applies
+`jax.lax.optimization_barrier` immediately after advection to avoid the
+backend-sensitive fusion regression observed on ROCm.
 
 The runner independently resumes interrupted coarse and fine warmups, records
 the precursor, executes the main turbine run, creates 100 frames, and overlays
