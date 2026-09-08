@@ -1,5 +1,9 @@
 # HornsRev1
 
+> Run all commands below on a compute node, including configuration checks.
+> This case uses schema version 1. Historical outputs cannot be resumed;
+> regenerate inputs in the new format. See [verification](../../doc/verification.md).
+
 Neutral offshore precursor for the Horns Rev 1 wind farm (Vestas V80-2.0 MW,
 80 m rotor, 70 m hub height, 7D spacing). This directory currently provides the
 **warmup** stage only: a periodic, pressure-driven neutral boundary layer that
@@ -15,10 +19,10 @@ spins up turbulence for a later precursor/main turbine workflow.
 | Inflow | `U(70 m) = 8 m/s`, neutral, no Coriolis |
 | Friction velocity | `u* = kappa U_hub / ln(z_hub/z0) = 0.250672 m/s` |
 | Forcing | `dp/dx = u*^2 / lz = 4.9090957826e-05 m/s^2` |
-| Scheme | RK3 with adaptive timestep, `cfl_ceiling = 0.9` |
+| Scheme | RK3 with adaptive timestep, `time.cfl = 0.9` |
 | Warmup | `6000 x 6.0 s = 36000 s` (10 h, ~7 turnovers at `lz/u* = 5106 s`) |
 
-`dt_seconds` is the step **cap**, not a fixed step: with `cfl_ceiling` set, the
+`dt_seconds` is the step **cap**, not a fixed step: with `time.cfl` set, the
 solver picks each step from the CFL ceiling and only clips at the cap. The
 configured step counts therefore denote the physical schedule
 (`duration = steps * dt_seconds`), not the steps actually taken.
@@ -27,16 +31,16 @@ configured step counts therefore denote the physical schedule
 
 ```bash
 # dz = 20 m
-python -m applications.fv_abl.workflow cases/HornsRev1/fv_workflow.toml \
-  --stage warmup --overwrite
+jaxwind workflow cases/HornsRev1/fv_workflow.toml \
+  --stage warmup
 
 # dz = 10 m (same domain, doubled vertical resolution)
-python -m applications.fv_abl.workflow \
-  cases/HornsRev1/fv_workflow_256x256x128.toml --stage warmup --overwrite
+jaxwind workflow \
+  cases/HornsRev1/fv_workflow_256x256x128.toml --stage warmup
 ```
 
 Continue an existing warmup by pointing `warmup_restart_checkpoint` in
-`[finite_volume_workflow]` at the checkpoint to resume from and sending the run
+`[workflow]` at the checkpoint to resume from and sending the run
 to a fresh `output_directory`; the stage adds `warmup_steps * dt_seconds` of
 physical time to the checkpoint's clock.
 

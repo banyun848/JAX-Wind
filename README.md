@@ -1,165 +1,95 @@
 # JAX-Wind
 
-JAX-Wind is a functional large-eddy simulation solver for atmospheric boundary
-layers and wind-energy flows. The package owns numerical meaning and state
-transitions; directories under `cases/` contain data only, while
-`applications/` owns configuration interpretation, diagnostics, and effects.
+JAX-Wind is a functional staggered finite-volume LES solver for atmospheric
+boundary layers, wind-energy flows, and cryogenic jets. Numerical kernels,
+simulation construction, host execution, and workflow orchestration have
+separate owners. See [architecture](doc/architecture.md) and
+[ADR-0018](doc/design/decisions/0018-simulation-runtime.md).
+The [refactor plan and acceptance checklist](doc/refactor-plan.md) track scope
+and the remaining compute-node gate.
 
-The active solver is the staggered finite-volume implementation. It supports
-atmospheric boundary layers, wind-energy flows, mapped meshes, and cryogenic
-low-Mach cases with FFT, geometric multigrid, or optional AMG pressure
-projection.
+## Compute-node setup and verification
 
-## Install
+On a login node, restrict work to reading/searching files and editing.
+Run installation, Python (including configuration checks), tests, builds,
+simulations, and benchmarks **only on a compute node**.
 
-JAX-Wind requires Python 3.11 or newer:
-
-```bash
-python -m pip install -e .
-```
-
-The optional GPU AMG backend is available from the `external/jax-amg`
-submodule.
-
-Install the JAX build appropriate for the CPU or accelerator on the target
-machine.
-
-The default `pytest` collection is a curated core suite of fewer than 50
-solver and active LN₂/wind-farm contracts. Publication reproductions,
-multi-process checks, backend-specific oracles, and visualization tests are
-kept as an opt-in extended suite:
+Inside your site's compute allocation, use Python 3.10+ and the appropriate
+CPU/CUDA/ROCm JAX environment:
 
 ```bash
-pytest
-pytest -o 'python_files=test_*.py'
+python -m pip install -e '.[dev]'
 ```
 
-## Run a finite-volume ABL case
+The refactor is not yet numerically verified. Follow the
+[guarded baseline/candidate verification procedure](doc/verification.md).
+It supplies interactive and Slurm scripts, small cases, exact-resume checks,
+and numerical comparisons against the pre-refactor revision. Optional AMG
+requires the dependencies supplied with `external/jax-amg`.
 
-The atmospheric cases use the staggered finite-volume solver, AB2,
-and its direct FFT pressure backend. The FV path currently uses AMD momentum
-closure and an eddy-diffusivity passive scalar, so its resolved output records
-that closure distinction from other closure formulations. Its extended diagnostics
-supply every currently registered Andrén overlay (Figures 2--8, 11, 14, and
-15):
+## One user interface
+
+The following commands belong on a compute node:
 
 ```bash
-python -m applications.fv_abl cases/Andren1994/config.toml --dry-run
-JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl cases/Andren1994/config.toml \
-  --max-steps 10 --overwrite
+jaxwind check cases/Andren1994/config.toml
+jaxwind run cases/Andren1994/config.toml --output runs/andren-smoke --max-steps 10
+jaxwind resume runs/andren-smoke
 ```
 
-The FV core also provides an opt-in variable-density low-Mach formulation.
-`IdealGasMixture` evaluates thermodynamic density from temperature, a scalar
-or hydrostatic base-state pressure field, and
-transported gas mass fractions, `conservative_specific_tendency` advances a
-density-weighted scalar inventory, and `project_low_mach` corrects face
-momentum so that
-`(rho_new-rho_old)/dt + div(rho*u) = mass_source` holds discretely. Because
-the correction is applied to momentum, this conservative formulation reuses
-the scalable FFT/GMG pressure operators. The HITSZ LN2 runner uses this path;
-the ABL runners remain backward-compatible constant-density/Boussinesq cases.
+`python -m jaxwind` is equivalent to the installed `jaxwind` command.
+A new run requires an empty output directory. `--max-steps` pauses one
+invocation without changing its configured target; `resume` continues the
+complete saved state and accumulated diagnostics. There is no overwrite flag.
 
-The FV mesh can also be a separable analytical mapping. `AnalyticalGrid` samples
-user callables in normalized computational space before JAX tracing; built-in
-`TanhMapping` and `SinhMapping` cover smooth clustering. For example, the
-HITSZ inlet mesh uses `TanhMapping(2.2, focus=0.0)` in x and central tanh
-branches on the nozzle y-z axis. Fluxes, SGS widths, wall sources, parcels,
-scalars, and pressure projection use local cell widths/volumes. Mapped meshes
-use GMG or AMG because an FFT direction must remain uniform.
-
-For open-streamwise calculations, the FV application also provides a
-configuration-driven warmup/precursor/main workflow. It develops and records
-the periodic precursor with FFT, writes only one inflow layer per time step,
-then enforces those layers in an open-x main run with GMG and a second-order
-outflow condition:
+## Derive a case
 
 ```bash
-python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --dry-run
-JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --max-steps 2 --overwrite
+jaxwind case derive cases/Andren1994/config.toml \
+  --output cases/local/andren-fine.toml --cells 80 80 80 --cfl 0.5
+jaxwind check cases/local/andren-fine.toml
+jaxwind run cases/local/andren-fine.toml
 ```
 
-Nieuwstadt uses that same ABL command and schema. It also has an FV comparison
-runner with Boussinesq coupling and FFT pressure projection:
+This writes a small `extends` document, leaves the base untouched, and gives
+the derived case an independent name/output. Tables merge recursively; arrays
+replace. Inputs resolve relative to the file that declares them; outputs are
+relative to invocation. ABL resolution changes explicitly select linear
+resampling of tabulated initial profiles; unchanged cases retain strict matching.
+CFL adaptation is supported for Boussinesq flow;
+fixed-step formulations reject `--cfl`. Their resolution can still be changed
+with `--cells`. Mesh changes require compatible new initialization artifacts,
+not exact resume of a different mesh.
+
+## Compose a workflow
 
 ```bash
-python -m applications.fv_abl cases/Nieuwstadt1993/config.toml --dry-run
-JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl cases/Nieuwstadt1993/config.toml --overwrite
+jaxwind workflow cases/HITSZWindTunnel/fv_workflow.toml \
+  --output runs/hitsz-workflow --max-steps 10
+jaxwind workflow cases/HITSZWindTunnel/fv_workflow.toml \
+  --output runs/hitsz-workflow --resume
 ```
 
-GABLS1 also has an FV runner with evolving surface temperature and coupled
-Monin–Obukhov momentum and heat fluxes. Its complete overlay covers 27 of the
-30 official diagnostics:
+The atmospheric recipe expands into periodic warmup, recorded precursor, and
+open-inflow stages. Explicit workflows connect named artifacts with
+`@stage/checkpoint` or `@stage/inflow`; see
+[cases](cases/README.md). Selecting a stage includes its declared dependencies.
 
-```bash
-python -m applications.fv_abl cases/GABLS1/config.toml --dry-run
-JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl cases/GABLS1/config.toml \
-  --output gabls1_fv_fft_overlays
-python tools/overlay_gabls1.py gabls1_fv_fft_overlays \
-  --output-dir gabls1_fv_fft_overlays
-```
+## Developer guide
 
-## Solver boundary
+- `config`: versioned schema, inheritance, validation, typed physical inputs.
+- `numerics`, physical modules, `formulations`: arrays, operators, coupled state.
+- `simulation`: model composition and compiled advancement.
+- `runtime`: the shared host loop, scheduling, checkpointable observations.
+- `io`: versioned checkpoints, inflow chunks, explicit initialization.
+- `workflows` and `cli`: stage dependencies and thin user entry points.
 
-`jaxwind` is the only numerical solver API. Applications construct FV
-state, operators, pressure projection, and integration directly from their
-case data. FFT and multigrid are pressure backends inside this solver, not
-separate flow solvers.
+Add physics through numerical functions and builder composition; reuse the
+runtime instead of creating another application loop. Package code does not
+import experiment tools. Case directories contain data, not execution logic.
 
-## Wind-farm turbine models
-
-`jaxwind.windfarm` owns physical turbine parameterizations and OpenFAST input
-adapters. The smallest turbine model is a uniform, non-rotating actuator disk
-specified in SI units and lowered explicitly to the solver scales:
-
-```python
-from jaxwind.physics import WindTunnelModel
-from jaxwind.windfarm import SimpleActuatorDisk
-
-turbine = SimpleActuatorDisk(
-    x_m=400.0,
-    y_m=250.0,
-    hub_height_m=90.0,
-    rotor_diameter_m=120.0,
-    thrust_coefficient_prime=4.0 / 3.0,
-    smoothing_width_m=10.0,
-)
-wind_tunnel = WindTunnelModel(
-    actuator_disk=turbine.to_actuator_disk(scales=scales),
-)
-```
-
-The disk reuses the force-conserving, filtered pure-thrust kernel. The upstream
-OpenFAST source is pinned under `src/jaxwind/windfarm/reference/openfast` only
-for implementation and input-format reference; it is excluded from package
-discovery and is never imported or linked by JAX-Wind.
-
-## Package structure
-
-| Path | Responsibility |
-| --- | --- |
-| `src/jaxwind` | Finite-volume state, operators, pressure projection, closures, and integration |
-| `src/jaxwind/domain` | Uniform and analytically mapped grids plus physical scales |
-| `src/jaxwind/physics` | Shared physical configuration values |
-| `src/jaxwind/windfarm` | Turbine parameterizations and OpenFAST input adapters |
-| `applications/fv_abl` | Atmospheric FV case execution and precursor workflows |
-| `applications/fv_ln2_jet` | Cryogenic low-Mach jet execution |
-| `cases` | Data-only case configurations and reference evidence |
-
-## Verify
-
-```bash
-python -m pytest -q
-```
-
-The default suite covers FV operators, pressure projection, conservative
-physics, mapped grids, cryogenic low-Mach flow, turbine forcing, and FV case
-composition.
-
-JAX-Wind is released under the [MIT License](LICENSE).
+This is a breaking configuration/API/artifact migration. Historical output
+directories are left untouched but cannot be resumed by the new runtime.
+Regenerate continuation inputs with the new format. See the
+[migration map](doc/architecture.md#migration-map) and
+[verification instructions](doc/verification.md) before production use.

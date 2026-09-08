@@ -1,0 +1,102 @@
+"""Simulation adapters for periodic development, recording, and open inflow."""
+from __future__ import annotations
+from dataclasses import replace
+from copy import deepcopy
+from .api import Simulation, AdvanceResult, build_simulation
+from jaxwind.config.document import ResolvedCase
+
+
+def build_stage(case, operation, inputs, options):
+    if operation == "simulation":
+        if "checkpoint" in inputs:
+            from jaxwind.io.checkpoint import checkpoint_metadata
+            from jaxwind.config.document import ResolvedCase
+            document = deepcopy(case.document)
+            initial = document.setdefault("initial_conditions", {})
+            if case.formulation == "low-mach-abl":
+                for key in ("initial_condition", "incompressible_checkpoint", "low_mach_checkpoint"):
+                    initial.pop(key, None)
+                source_formulation = checkpoint_metadata(inputs["checkpoint"])["formulation"]
+                if source_formulation not in {"boussinesq", "low-mach-abl"}:
+                    raise ValueError("unsupported low-Mach initialization conversion")
+                key = "incompressible_checkpoint" if source_formulation == "boussinesq" else "low_mach_checkpoint"
+                initial[key] = inputs["checkpoint"]
+            else:
+                initial["checkpoint"] = inputs["checkpoint"]
+            case = ResolvedCase(case.source, document)
+        return build_simulation(case)
+    if case.formulation != "boussinesq":
+        raise ValueError("periodic/inflow stage adapters currently require Boussinesq flow")
+    from jaxwind.config.abl import load_fv_abl
+    from .abl import initialize_periodic, build_periodic_advance
+    from jaxwind.io.state_fields import atmospheric_state
+    import jax
+    import jax.numpy as jnp
+    from jaxwind import courant_number, extract_inflow_plane, stable_timestep
+    configured = load_fv_abl(case)
+    jax.config.update("jax_enable_x64", configured.physical.dtype == "float64")
+    grid = configured.physical.physical_grid
+    warm = atmospheric_state(inputs["checkpoint"], grid) if "checkpoint" in inputs else initialize_periodic(configured, jax, jnp)
+    dt = case.document["time"]["dt_seconds"]
+    adaptive = "cfl" in case.document["time"]
+    courant = jax.jit(lambda state: courant_number(state.velocity, grid, dt))
+    if operation == "open-inflow":
+        from jaxwind.config.stages import load_workflow
+        from .open_atmospheric import build_open_components
+        from jaxwind.io.recording import InflowReader
+        if "inflow" not in inputs or "checkpoint" not in inputs:
+            raise ValueError("open-inflow requires checkpoint and inflow inputs")
+        if adaptive:
+            raise ValueError("open-inflow currently supports fixed timesteps only")
+        factor = options.get("substeps_per_inflow", 1)
+        if type(factor) is not int or factor <= 0:
+            raise ValueError("substeps_per_inflow must be a positive integer")
+        reader = InflowReader(inputs["inflow"], grid, samples=(case.document["time"]["steps"] + factor - 1) // factor, dt=dt*factor)
+        first = reader.read(0, 1)
+        first = type(first)(*(item[0] for item in first))
+        workflow = load_workflow(case)
+        initial, advance = build_open_components(workflow, warm, first)
+        def advance_open(state, controls):
+            start = int(state.step)
+            first_sample, last_sample = start // factor, (start + controls.count + factor - 1) // factor
+            planes = reader.read(first_sample, last_sample)
+            planes = type(planes)(*(jnp.repeat(item, factor, axis=0)[start % factor:start % factor + controls.count] for item in planes))
+            return advance(state, dt, planes)
+        return Simulation(case, grid, initial, advance_open, courant)
+    if operation not in {"periodic", "record-inflow"}:
+        raise ValueError(f"unknown stage operation: {operation}")
+    step, fixed = build_periodic_advance(configured)
+    if operation == "periodic":
+        if adaptive:
+            from jaxwind import build_adaptive_atmospheric_run
+            advance = build_adaptive_atmospheric_run(step, grid, cfl_ceiling=case.document["time"]["cfl"], maximum_dt=dt)
+            return Simulation(case, grid, warm, lambda state, controls: advance(state, controls.target_time, controls.count), courant, True)
+        initial_time, initial_step = float(warm.time), int(warm.step)
+        def advance_periodic(state, controls):
+            final = fixed(state, dt, controls.count)
+            return final._replace(time=jnp.asarray(initial_time + (int(final.step)-initial_step)*dt, final.time.dtype))
+        return Simulation(case, grid, warm, advance_periodic, courant)
+    plane_index = options.get("record_plane", 0)
+    if type(plane_index) is not int or not 0 <= plane_index < grid.nx:
+        raise ValueError("record_plane is outside the mesh")
+    initial_time, initial_step = float(warm.time), int(warm.step)
+    def block(current, count, target_time):
+        def advance(state, unused):
+            if not adaptive:
+                state = state._replace(time=jnp.asarray(initial_time, state.time.dtype) + (state.step-initial_step)*dt)
+            plane = extract_inflow_plane(state, grid, plane_index)
+            active_dt = jnp.asarray(dt, state.time.dtype)
+            if adaptive:
+                active_dt = jnp.minimum(jnp.minimum(active_dt, stable_timestep(state.velocity, grid, 0., courant=case.document["time"]["cfl"])), jnp.maximum(target_time-state.time, 0.))
+                final = jax.lax.cond(active_dt > 0., lambda value: step(value, active_dt), lambda value: value, state)
+            else:
+                final = step(state, active_dt)
+                final = final._replace(time=jnp.asarray(initial_time, final.time.dtype) + (final.step-initial_step)*dt)
+            return final, (*plane, state.time, active_dt)
+        return jax.lax.scan(advance, current, None, length=count)
+    compiled = jax.jit(block, static_argnums=1)
+    def record(state, controls):
+        final, arrays = compiled(state, controls.count, controls.target_time)
+        outputs = dict(zip(("x_velocity", "y_velocity", "z_velocity", "scalar", "time_seconds", "dt_seconds"), arrays))
+        return AdvanceResult(final, outputs)
+    return Simulation(case, grid, warm, record, courant, adaptive)

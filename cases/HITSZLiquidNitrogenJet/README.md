@@ -1,5 +1,9 @@
 # HITSZ liquid-nitrogen jet (finite volume)
 
+> Run all commands below on a compute node, including configuration checks.
+> This case uses schema version 1. Historical outputs cannot be resumed;
+> regenerate inputs in the new format. See [verification](../../doc/verification.md).
+
 This case isolates the hub-height LN2 jet in still air at 80% relative humidity: no turbine, no tunnel
 pressure forcing, and no background velocity.  The 3 m x 3 m x 1.8 m domain
 uses 256 cells in every direction.  The nozzle is at one-quarter of the streamwise domain and centred in y
@@ -35,15 +39,15 @@ step, so this case uses 50 microseconds rather than the uniform-mesh 500
 microseconds:
 
 ```bash
-python -m applications.fv_ln2_jet \
+jaxwind run \
   cases/HITSZLiquidNitrogenJet/fv_256_low_mach_rk3_inlet_mapped.toml \
-  --steps 2
+  --max-steps 2
 ```
 
 Run a short validation first:
 
 ```bash
-python -m applications.fv_ln2_jet cases/HITSZLiquidNitrogenJet/fv_256.toml --steps 2
+jaxwind run cases/HITSZLiquidNitrogenJet/fv_256.toml --max-steps 2
 ```
 
 The carrier and all thermodynamic fields use three-stage fast-RK3: the
@@ -52,5 +56,5 @@ at the end of each full step.  The configured production run is 1 second
 (2,000 steps):
 
 ```bash
-python -m applications.fv_ln2_jet cases/HITSZLiquidNitrogenJet/fv_256.toml
+jaxwind run cases/HITSZLiquidNitrogenJet/fv_256.toml
 ```

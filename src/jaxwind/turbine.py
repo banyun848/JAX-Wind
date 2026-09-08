@@ -19,7 +19,7 @@ from jaxwind.physics import (
     NacelleTowerDrag,
 )
 
-from .discretization import cell_velocity
+from jaxwind.numerics.discretization import cell_velocity
 from .state import StaggeredVelocity
 
 

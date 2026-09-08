@@ -1,0 +1,81 @@
+"""Small execution contract shared by all coupled formulations."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from jaxwind.config.document import ResolvedCase, load_case
+
+
+@dataclass(frozen=True)
+class RunControls:
+    count: int
+    target_time: float
+
+
+@dataclass(frozen=True)
+class AdvanceResult:
+    state: Any
+    outputs: dict
+
+
+@dataclass(frozen=True)
+class Simulation:
+    case: ResolvedCase
+    grid: Any
+    initial_state: Any
+    advance_block: Callable
+    courant: Callable
+    adaptive: bool = False
+    diagnostics: Any = None
+
+    def initialize(self, inputs=None):
+        if inputs:
+            raise ValueError("initial inputs must be resolved by the simulation builder")
+        return self.initial_state
+
+    def advance(self, state, controls: RunControls):
+        return self.advance_block(state, controls)
+
+
+def _build(case) -> Simulation:
+    case = load_case(case)
+    import jax
+    import jax.numpy as jnp
+    from jaxwind import courant_number
+    dtype = case.document["numerics"].get("dtype", "float32")
+    jax.config.update("jax_enable_x64", dtype == "float64")
+    dt = case.document["time"]["dt_seconds"]
+    if case.formulation == "boussinesq":
+        from jaxwind.config.abl import load_fv_abl
+        from .atmospheric import build_components
+        components = build_components(load_fv_abl(case))
+        def advance(state, controls):
+            target = controls.target_time if components.adaptive else dt
+            return components.advance(state, target, controls.count)
+        courant = jax.jit(lambda state: courant_number(state.velocity, components.grid, dt))
+        return Simulation(case, components.grid, components.initial, advance, courant, components.adaptive, components)
+    if case.formulation == "low-mach-abl":
+        from jaxwind.config.low_mach import load_case as load_native
+        from jaxwind.simulation.low_mach import build_simulation as build_native
+        native = load_native(case)
+        workflow, grid, initial, advance, courant = build_native(native)
+        return Simulation(case, grid, initial, lambda state, controls: advance(state, controls.count), courant)
+    from jaxwind.config.jet import load_case as load_native
+    from jaxwind.simulation.jet import build_simulation as build_native
+    native = load_native(case)
+    grid, jet, microphysics, initial, advance, _ = build_native(native)
+    courant = jax.jit(lambda state: courant_number(state.velocity, grid, dt))
+    return Simulation(case, grid, initial, lambda state, controls: advance(state, controls.count), courant)
+
+
+def build_simulation(case) -> Simulation:
+    from dataclasses import replace
+    from jaxwind.io.state_fields import initialize_state
+    case = load_case(case)
+    simulation = _build(case)
+    checkpoint = case.document.get("initial_conditions", {}).get("checkpoint")
+    if checkpoint is not None:
+        state = initialize_state(checkpoint, simulation.initial_state, simulation.grid, case.formulation)
+        simulation = replace(simulation, initial_state=state)
+    return simulation

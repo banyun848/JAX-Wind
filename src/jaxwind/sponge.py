@@ -7,7 +7,7 @@ layer: an extra relaxation term, active only near the top, that nudges the
 velocity toward a target state on a time scale much shorter than the flow's
 own, so energy is absorbed before it can reflect.
 
-The tendency plugs into :attr:`~jaxwind.integrate.FlowModel.forcing`, so it
+The tendency plugs into :attr:`~jaxwind.numerics.integrate.FlowModel.forcing`, so it
 is integrated by the same explicit scheme as everything else and needs no
 change to the stepper.
 """

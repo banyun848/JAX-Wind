@@ -1,9 +1,8 @@
+schema_version = 1
+formulation = "low-mach-abl"
+
 [case]
 name = "hitsz_periodic_low_mach_continuation_512x128x64_300s"
-
-[restart]
-source_workflow = "fv_uniform_512x128x64_l24_low_mach_continuation.toml"
-low_mach_checkpoint = "outputs/hitsz_low_mach_continuation/fv_512x128x64_300s/prolonged_initial.npz"
 
 [time]
 dt_seconds = 0.005
@@ -12,7 +11,14 @@ chunk_steps = 100
 frame_count = 100
 statistics_window_seconds = 60.0
 
-[thermodynamics]
+[numerics]
+pressure_backend = "fft"
+time_integration = "fast-rk3"
+
+[output]
+directory = "outputs/hitsz_low_mach_continuation/fv_512x128x64_300s"
+
+[physics.thermodynamics]
 temperature_k = 300.0
 pressure_pa = 101325.0
 water_vapor_mixing_ratio = 0.017996758222579956
@@ -21,9 +27,6 @@ nitrogen_gas_constant_j_kg_k = 296.8
 water_vapor_gas_constant_j_kg_k = 461.5
 gravity_m_s2 = [0.0, 0.0, -9.81]
 
-[numerics]
-pressure_backend = "fft"
-time_integration = "fast-rk3"
-
-[output]
-directory = "outputs/hitsz_low_mach_continuation/fv_512x128x64_300s"
+[initial_conditions]
+source_case = "fv_uniform_512x128x64_l24_low_mach_continuation.toml"
+low_mach_checkpoint = "../../outputs/hitsz_low_mach_continuation/fv_512x128x64_300s/prolonged_initial.npz"

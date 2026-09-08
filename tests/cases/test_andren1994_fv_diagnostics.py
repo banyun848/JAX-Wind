@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from applications.fv_abl.physical import load_abl
+from jaxwind.config.abl_physical import load_abl
 from tools.run_fv_andren1994 import (
     DEFAULT_CONFIG,
     PROFILE_NAMES,

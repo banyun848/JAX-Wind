@@ -183,12 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     import jax.numpy as jnp
     import jaxlib
 
-    from applications.fv_abl.workflow import (
-        _initial_periodic,
-        _models,
-        _periodic_advance,
-        load_workflow,
-    )
+    from jaxwind.simulation.abl import initialize_periodic, build_models, build_periodic_advance
+    from jaxwind.config.stages import load_workflow
     from jaxwind import (
         StaggeredVelocity,
         advection,
@@ -230,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("the decomposition requires adaptive CFL control")
 
     jax.config.update("jax_enable_x64", case.dtype == "float64")
-    boundaries, momentum, scalar, buoyancy, coupled_surface = _models(
+    boundaries, momentum, scalar, buoyancy, coupled_surface = build_models(
         configured, periodic_x=True
     )
     if (
@@ -246,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             "the benchmark currently targets the neutral HITSZ warmup closures"
         )
 
-    step, _ = _periodic_advance(configured, fft_config=fft_config)
+    step, _ = build_periodic_advance(configured, fft_config=fft_config)
     fixed_run = build_atmospheric_run(step)
     adaptive_run = build_adaptive_atmospheric_run(
         step,
@@ -256,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     solution = _ready(
         jax,
-        _initial_periodic(configured, jax, jnp, fft_config=fft_config),
+        initialize_periodic(configured, jax, jnp, fft_config=fft_config),
     )
 
     setup_target = float(solution.time) + arguments.setup_steps * case.dt_seconds

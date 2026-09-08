@@ -1,7 +1,10 @@
+schema_version = 1
+formulation = "cryogenic-low-mach"
+
 [case]
 name = "HITSZ fully flashed pure-nitrogen subgrid jet, low-Mach FV 512x128x64"
 
-[domain]
+[mesh]
 cells = [512, 128, 64]
 lengths_m = [24.0, 6.0, 3.6]
 # Quiescent ambient inlet at x=0, pressure outlet at x=24 m.
@@ -13,7 +16,20 @@ steps = 400
 chunk_steps = 4
 checkpoint_every_steps = 400
 
-[ambient]
+[numerics]
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 2
+gmg_postsweeps = 2
+momentum_closure = "amd"
+scalar_advection_scheme = "upwind"
+time_integration = "rk3"
+dtype = "float32"
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_512x128x64_l24_pure_nitrogen_low_mach_1s"
+
+[physics.ambient]
 temperature_k = 300.0
 relative_humidity = 0.80
 water_vapor_mixing_ratio = 0.017996758222579956
@@ -26,16 +42,10 @@ kinematic_viscosity_m2_s = 1.5e-5
 scalar_diffusivity_m2_s = 2.2e-5
 gravity_m_s2 = [0.0, 0.0, -9.81]
 
-[walls]
+[physics.walls]
 roughness_length_m = 1.6100320416141182e-5
 
-[source]
-mode = "volume"
-# The nozzle exits as liquid (quality zero), then all remaining liquid flashes
-# into nitrogen vapour inside the normalized grid-scale source kernel.
-fully_vaporized_within_source_cell = true
-
-[jet]
+[physics.jet]
 position_m = [6.3, 3.0, 0.876]
 radius_m = 0.001
 speed_m_s = 4.9358940805812895
@@ -56,16 +66,8 @@ maximum_parcels = 8
 parcel_substeps = 1
 cone_half_angle_degrees = 0.0
 
-[numerics]
-flow_formulation = "low-mach"
-pressure_backend = "gmg"
-gmg_tolerance = 1.0e-5
-gmg_presweeps = 2
-gmg_postsweeps = 2
-momentum_closure = "amd"
-scalar_advection_scheme = "upwind"
-time_integration = "rk3"
-dtype = "float32"
-
-[output]
-directory = "outputs/hitsz_ln2_jet/fv_512x128x64_l24_pure_nitrogen_low_mach_1s"
+[physics.source]
+mode = "volume"
+# The nozzle exits as liquid (quality zero), then all remaining liquid flashes
+# into nitrogen vapour inside the normalized grid-scale source kernel.
+fully_vaporized_within_source_cell = true

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from applications.fv_abl.__main__ import parser, run
-from applications.fv_abl.diagnostics import (
+from jaxwind.cli.abl import parser, run
+from jaxwind.runtime.abl_diagnostics import (
     PROFILE_NAMES,
     ProfileAccumulator,
     initial_fields as _initial_fields,

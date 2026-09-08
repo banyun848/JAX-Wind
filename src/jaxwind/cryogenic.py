@@ -22,7 +22,7 @@ from jaxwind.physics.cryogenic import (
     advance_nitrogen_droplet,
 )
 
-from .discretization import _cells_to_faces, cell_velocity
+from jaxwind.numerics.discretization import _cells_to_faces, cell_velocity
 from .state import StaggeredVelocity
 
 

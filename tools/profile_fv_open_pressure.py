@@ -27,11 +27,9 @@ def main() -> int:
 
     import jax
 
-    from applications.fv_abl.workflow import (
-        _load_inflow_block,
-        _load_solution,
-        load_workflow,
-    )
+    from jaxwind.io.inflow import load_inflow_block
+    from jaxwind.io.abl_checkpoint import load_solution
+    from jaxwind.config.stages import load_workflow
     from jaxwind import (
         build_gmg_solver,
         divergence,
@@ -43,8 +41,8 @@ def main() -> int:
     case = workflow.case.physical
     grid = case.physical_grid
     output = workflow.options.output_directory
-    warm = _load_solution(output / "warmup_checkpoint.npz", jax.numpy)
-    inflow = _load_inflow_block(output / "precursor_inflow", 0, 1, jax.numpy)
+    warm = load_solution(output / "warmup/checkpoint.npz", jax.numpy)
+    inflow = load_inflow_block(output / "precursor/inflow", 0, 1, jax.numpy)
     inflow = type(inflow)(*(component[0] for component in inflow))
     velocity = periodic_to_open_velocity(warm.velocity, grid)
     velocity = enforce_open_velocity(velocity, inflow, grid)

@@ -23,8 +23,8 @@ import jax.numpy as jnp
 
 from jaxwind.domain.grid import Grid
 
-from .discretization import _cells_to_faces, divergence, pressure_gradient
-from .poisson import PressurePoisson
+from jaxwind.numerics.discretization import _cells_to_faces, divergence, pressure_gradient
+from jaxwind.numerics.poisson import PressurePoisson
 from .scalar import PassiveScalar, scalar_tendency
 from .state import (
     StaggeredVelocity,

@@ -1,3 +1,6 @@
+schema_version = 1
+formulation = "boussinesq"
+
 [case]
 name = "gabls1_fv_64x64x64"
 citation = "Beare et al. (2006), Boundary-Layer Meteorology 118, 247-272"
@@ -5,33 +8,13 @@ initial_profile = "reference/initial_profiles_64.csv"
 reference_results = "reference/reference_results.json"
 seed = 0
 
-[domain]
+[mesh]
 cells = [64, 64, 64]
 lengths_m = [400.0, 400.0, 400.0]
-
-
-[flow]
-pressure_acceleration_m_s2 = [0.0, 0.0]
-geostrophic_velocity_m_s = [8.0, 0.0]
-advection_frame_velocity_m_s = [8.0, 0.0]
-coriolis_s = [1.39e-4, 0.0]
-roughness_length_m = 0.1
-von_karman = 0.4
-
-[scalar]
-reference_value = 265.0
-surface_flux = 0.0
-buoyancy_acceleration_per_unit = 0.03722960151802657
-
-[surface_scalar]
-initial_value = 265.0
-rate_per_second = -6.944444444444444e-5
-roughness_length_m = 0.1
 
 [time]
 dt_seconds = 0.08333333333333333
 steps = 388800
-
 
 [numerics]
 dtype = "float32"
@@ -44,3 +27,21 @@ reference_velocity_m_s = 8.0
 reference_scalar = 1.0
 inversion_search_max_height_m = 250.0
 spectrum_heights_m = [25.0, 75.0, 150.0]
+
+[physics.flow]
+pressure_acceleration_m_s2 = [0.0, 0.0]
+geostrophic_velocity_m_s = [8.0, 0.0]
+advection_frame_velocity_m_s = [8.0, 0.0]
+coriolis_s = [1.39e-4, 0.0]
+roughness_length_m = 0.1
+von_karman = 0.4
+
+[physics.scalar]
+reference_value = 265.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.03722960151802657
+
+[physics.surface_scalar]
+initial_value = 265.0
+rate_per_second = -6.944444444444444e-5
+roughness_length_m = 0.1

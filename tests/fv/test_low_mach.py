@@ -6,7 +6,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 
-from applications.fv_ln2_jet.run import _conservative_nonnegative
+from jaxwind.formulations.jet import _conservative_nonnegative
 
 from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
 from jaxwind import (

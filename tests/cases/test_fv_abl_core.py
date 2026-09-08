@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from applications.fv_abl.physical import load_abl
-from applications.fv_abl.config import load_fv_abl
-from applications.fv_abl.evaluate import resolved
+from jaxwind.config.abl_physical import load_abl
+from jaxwind.config.abl import load_fv_abl
+from jaxwind.config.abl_resolved import resolved
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +39,7 @@ def test_fv_options_are_strict_configuration(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="pressure_backend must be one of"):
+    with pytest.raises(ValueError, match="pressure_backend must be"):
         load_fv_abl(invalid)
 
 
@@ -89,8 +89,8 @@ def test_adaptive_rk_options_are_configuration_only(tmp_path: Path) -> None:
     configured.write_text(
         text.replace(
             'time_integration = "ab2"',
-            'time_integration = "rk3"\ncfl_ceiling = 0.8',
-        ),
+            'time_integration = "rk3"',
+        ).replace('[time]', '[time]\ncfl = 0.8'),
         encoding="utf-8",
     )
     case = load_fv_abl(configured)
@@ -100,7 +100,7 @@ def test_adaptive_rk_options_are_configuration_only(tmp_path: Path) -> None:
 
 
 def test_fv_core_contains_no_benchmark_dispatch() -> None:
-    core = ROOT / "applications" / "fv_abl"
+    core = ROOT / "src" / "jaxwind" / "numerics"
     source = "\n".join(
         path.read_text(encoding="utf-8").lower()
         for path in core.glob("*.py")

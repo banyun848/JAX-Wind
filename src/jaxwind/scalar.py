@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from jaxwind.domain.grid import Grid
 
 from .metrics import center_distances, shaped_widths
-from .discretization import _cells_to_faces
+from jaxwind.numerics.discretization import _cells_to_faces
 from .state import StaggeredVelocity, spanwise_is_periodic, streamwise_is_periodic
 
 

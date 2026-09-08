@@ -1,3 +1,6 @@
+schema_version = 1
+formulation = "boussinesq"
+
 [case]
 name = "hornsrev1_fv_128x128x64"
 citation = "Hansen et al. (2012), Wind Energy 15, 183-196; Barthelmie et al. (2010), Wind Energy 13, 573-586"
@@ -5,26 +8,9 @@ initial_profile = "fv_initial_profile_64.csv"
 reference_results = "fv_reference_results.json"
 seed = 2026
 
-[domain]
+[mesh]
 cells = [128, 128, 64]
 lengths_m = [10240.0, 10240.0, 1280.0]
-
-
-[flow]
-# Neutral offshore precursor driven by a constant pressure gradient.
-# u* = kappa U_hub / ln(z_hub / z0) = 0.4 * 8 / ln(70 / 2e-4) = 0.250672 m/s
-# pressure_acceleration = u*^2 / lz
-pressure_acceleration_m_s2 = [4.9090957826e-05, 0.0]
-geostrophic_velocity_m_s = [0.0, 0.0]
-advection_frame_velocity_m_s = [0.0, 0.0]
-coriolis_s = [0.0, 0.0]
-roughness_length_m = 2.0e-4
-von_karman = 0.4
-
-[scalar]
-reference_value = 0.0
-surface_flux = 0.0
-buoyancy_acceleration_per_unit = 0.0
 
 [time]
 # dt_seconds is the step CAP; cfl_ceiling below picks the actual step.
@@ -34,8 +20,22 @@ dt_seconds = 6.0
 steps = 12000
 
 
+cfl = 0.9
+chunk_steps = 50
+
 [numerics]
 dtype = "float32"
+
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 1
+gmg_postsweeps = 1
+time_integration = "rk3"
+turbulent_prandtl = 0.4
+spectrum_diagnostic = "none"
+
+[output]
+directory = "outputs/hornsrev1_fv_{pressure_backend}_128x128x64"
 
 [diagnostics]
 sample_start_step = 10800
@@ -46,20 +46,23 @@ reference_scalar = 1.0
 inversion_search_max_height_m = 1280.0
 spectrum_heights_m = [70.0]
 
+[physics.flow]
+# Neutral offshore precursor driven by a constant pressure gradient.
+# u* = kappa U_hub / ln(z_hub / z0) = 0.4 * 8 / ln(70 / 2e-4) = 0.250672 m/s
+# pressure_acceleration = u*^2 / lz
+pressure_acceleration_m_s2 = [4.9090957826e-05, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 2.0e-4
+von_karman = 0.4
 
-[finite_volume]
-pressure_backend = "gmg"
-gmg_tolerance = 1.0e-5
-gmg_presweeps = 1
-gmg_postsweeps = 1
-time_integration = "rk3"
-cfl_ceiling = 0.9
-turbulent_prandtl = 0.4
-chunk_steps = 50
-spectrum_diagnostic = "none"
-output_directory = "outputs/hornsrev1_fv_{pressure_backend}_128x128x64"
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0
 
-[finite_volume_workflow]
+[workflow]
 warmup_steps = 12000
 precursor_steps = 1200
 main_steps = 1200

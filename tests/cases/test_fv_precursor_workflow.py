@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from applications.fv_abl.workflow import load_workflow
-from applications.fv_low_mach_abl.run import load_case as load_low_mach_extension
+from jaxwind.config.stages import load_workflow
+from jaxwind.config.low_mach import load_case as load_low_mach_extension
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -145,7 +145,7 @@ def test_hitsz_main_is_fixed_fast_rk3_with_native_turbine_and_frames() -> None:
     assert alm["turbine"]["smearing_azimuthal_elements"] is None
 
     cooled = load_workflow(HITSZ_COOLED_CONFIG).resolved()
-    assert cooled["input_directory"] == (
+    assert cooled["input_directory"].endswith(
         "outputs/hitsz_r9_fv_workflow_256x64x128"
     )
     assert cooled["main"]["evolve_scalar"] is True
@@ -208,14 +208,14 @@ def test_hitsz_main_is_fixed_fast_rk3_with_native_turbine_and_frames() -> None:
     assert low_mach.frame_count == 100
     assert low_mach.pressure_backend == "fft"
     assert low_mach.time_integration == "fast-rk3"
-    assert low_mach.source_checkpoint.name == "precursor_final.npz"
+    assert low_mach.source_checkpoint.name == "checkpoint.npz"
     assert low_mach.restart_formulation == "incompressible"
 
     precursor = load_low_mach_extension(HITSZ_LOW_MACH_PRECURSOR_CONFIG)
     assert precursor.steps * precursor.dt == 100.0
     assert precursor.frame_count == 100
     assert precursor.restart_formulation == "low-mach"
-    assert precursor.source_checkpoint.name == "low_mach_extension_final.npz"
+    assert precursor.source_checkpoint.name == "checkpoint.npz"
 
     sanity = load_low_mach_extension(HITSZ_LOW_MACH_SANITY_CONFIG)
     assert sanity.steps * sanity.dt == 900.0
@@ -263,7 +263,7 @@ def test_clustered_hitsz_toml_reproduces_the_cell_average_wall_law() -> None:
     import jax.numpy as jnp
     import numpy as np
 
-    from applications.initial_conditions import load_initial_profile
+    from jaxwind.io.initial_conditions import load_initial_profile
     from jaxwind.domain import AnalyticalGrid
     from jaxwind import (
         MoninObukhovWall,
@@ -272,7 +272,7 @@ def test_clustered_hitsz_toml_reproduces_the_cell_average_wall_law() -> None:
         surface_stress,
     )
 
-    from applications.fv_abl.workflow import _models
+    from jaxwind.simulation.abl import build_models
 
     workflow = load_workflow(HITSZ_CLUSTERED_CONFIG)
     case = workflow.case.physical
@@ -295,7 +295,7 @@ def test_clustered_hitsz_toml_reproduces_the_cell_average_wall_law() -> None:
     assert result["case"]["maximum_cell_widths_m"][2] == pytest.approx(
         0.09319970903140984
     )
-    _boundaries, momentum, _scalar, _buoyancy, _surface = _models(
+    _boundaries, momentum, _scalar, _buoyancy, _surface = build_models(
         workflow.case,
         periodic_x=True,
     )
@@ -326,7 +326,7 @@ def test_fixed_warmup_blocks_anchor_float32_time_to_step_count() -> None:
 
     import jax.numpy as jnp
 
-    from applications.fv_abl.workflow import _run_periodic_blocks
+    from jaxwind.runtime.periodic import run_periodic_blocks
     from jaxwind.domain import UniformGrid
     from jaxwind import StaggeredVelocity
 
@@ -351,7 +351,7 @@ def test_fixed_warmup_blocks_anchor_float32_time_to_step_count() -> None:
             accumulated = accumulated + jnp.asarray(dt, accumulated.dtype)
         return current._replace(time=accumulated)
 
-    result, _elapsed, _final_cfl, _maximum_cfl = _run_periodic_blocks(
+    result, _elapsed, _final_cfl, _maximum_cfl = run_periodic_blocks(
         state,
         advance,
         grid=grid,
@@ -368,7 +368,7 @@ def test_far_wake_analyzer_reports_downward_cooling_shift(
 ) -> None:
     import numpy as np
 
-    from applications.hitsz_ln2_far_wake import compare_far_wakes
+    from tools.compare_ln2_far_wakes import compare_far_wakes
 
     x_m = np.arange(6, dtype=np.float32) + 0.5
     y_m = np.arange(2, dtype=np.float32) + 0.5
@@ -423,7 +423,7 @@ def test_main_frame_capture_matches_full_field_host_interpolation() -> None:
     import jax.numpy as jnp
     import numpy as np
 
-    from applications.fv_abl.workflow import _capture_main_frame
+    from jaxwind.runtime.frames import capture_frame
     from jaxwind.domain import UniformGrid
 
     grid = UniformGrid(8, 4, 6, 8.0, 4.0, 3.0)
@@ -441,7 +441,7 @@ def test_main_frame_capture_matches_full_field_host_interpolation() -> None:
     )
     y_m = 1.7
     z_m = 1.1
-    result = _capture_main_frame(solution, grid, y_m=y_m, z_m=z_m)
+    result = capture_frame(solution, grid, y_m=y_m, z_m=z_m)
 
     host_faces = np.asarray(x_faces)
     u_cell = 0.5 * (host_faces[..., :-1] + host_faces[..., 1:])
@@ -488,7 +488,7 @@ def test_main_frame_capture_matches_full_field_host_interpolation() -> None:
         time=jnp.asarray(1.25),
         step=jnp.asarray(5),
     )
-    periodic = _capture_main_frame(
+    periodic = capture_frame(
         periodic_solution, grid, y_m=y_m, z_m=z_m
     )
     host_periodic = np.asarray(periodic_faces)

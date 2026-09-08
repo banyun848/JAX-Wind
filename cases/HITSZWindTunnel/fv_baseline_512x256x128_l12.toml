@@ -1,3 +1,6 @@
+schema_version = 1
+formulation = "boussinesq"
+
 [case]
 name = "hitsz_r9_adbem_baseline_512x256x128_l12"
 citation = "Yang, Lin & Zhou, Renewable Energy 220 (2024), 119625"
@@ -5,23 +8,9 @@ initial_profile = "fv_initial_profile.csv"
 reference_results = "fv_reference_results.json"
 seed = 2024
 
-[domain]
+[mesh]
 cells = [512, 256, 128]
 lengths_m = [12.0, 6.0, 3.6]
-
-
-[flow]
-pressure_acceleration_m_s2 = [0.004198491620939015, 0.0]
-geostrophic_velocity_m_s = [0.0, 0.0]
-advection_frame_velocity_m_s = [0.0, 0.0]
-coriolis_s = [0.0, 0.0]
-roughness_length_m = 1.6100320416141182e-5
-von_karman = 0.4
-
-[scalar]
-reference_value = 0.0
-surface_flux = 0.0
-buoyancy_acceleration_per_unit = 0.0
 
 [time]
 # This is the adaptive warmup ceiling.  The fixed precursor/main cadence is
@@ -30,8 +19,21 @@ dt_seconds = 0.02
 steps = 45000
 
 
+cfl = 1.0
+chunk_steps = 50
+
 [numerics]
 dtype = "float32"
+
+# The workflow uses FFT for both periodic stages and overrides this with GMG
+# for the enforced-inflow main stage.
+pressure_backend = "fft"
+time_integration = "fast-rk3"
+turbulent_prandtl = 0.4
+spectrum_diagnostic = "none"
+
+[output]
+directory = "outputs/hitsz_r9_fv_baseline_512x256x128_l12"
 
 [diagnostics]
 sample_start_step = 36000
@@ -42,19 +44,33 @@ reference_scalar = 1.0
 inversion_search_max_height_m = 3.6
 spectrum_heights_m = [0.876]
 
+[physics.flow]
+pressure_acceleration_m_s2 = [0.004198491620939015, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 1.6100320416141182e-5
+von_karman = 0.4
 
-[finite_volume]
-# The workflow uses FFT for both periodic stages and overrides this with GMG
-# for the enforced-inflow main stage.
-pressure_backend = "fft"
-time_integration = "fast-rk3"
-cfl_ceiling = 1.0
-turbulent_prandtl = 0.4
-chunk_steps = 50
-spectrum_diagnostic = "none"
-output_directory = "outputs/hitsz_r9_fv_baseline_512x256x128_l12"
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0
 
-[finite_volume_workflow]
+[physics.turbine]
+model = "hitsz-r9-ad-bem"
+x_m = 3.0
+y_m = 3.0
+hub_height_m = 0.876
+rotor_speed_rpm = 480.0
+blade_pitch_degrees = 0.0
+smoothing_width_m = 0.09375
+smearing_azimuthal_elements = 64
+body_smoothing_width_m = 0.1875
+nacelle_drag_coefficient = 1.0
+tower_drag_coefficient = 1.0
+
+[workflow]
 # 900 s warmup, followed by matched 90 s precursor and main windows.
 warmup_steps = 45000
 precursor_steps = 36000
@@ -67,16 +83,3 @@ chunk_steps = 50
 output_directory = "outputs/hitsz_r9_fv_baseline_512x256x128_l12"
 main_pressure_force = false
 evolve_scalar = false
-
-[finite_volume_turbine]
-model = "hitsz-r9-ad-bem"
-x_m = 3.0
-y_m = 3.0
-hub_height_m = 0.876
-rotor_speed_rpm = 480.0
-blade_pitch_degrees = 0.0
-smoothing_width_m = 0.09375
-smearing_azimuthal_elements = 64
-body_smoothing_width_m = 0.1875
-nacelle_drag_coefficient = 1.0
-tower_drag_coefficient = 1.0

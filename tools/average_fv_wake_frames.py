@@ -12,10 +12,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from jaxwind.io.recorded_field import RecordedField
 
 
 def _stream_mean(path: Path, batch_size: int = 256) -> np.ndarray:
-    values = np.load(path, mmap_mode="r")
+    values = RecordedField(path)
     total = np.zeros(values.shape[1:], dtype=np.float64)
     count = 0
     for start in range(0, values.shape[0], batch_size):
@@ -119,10 +120,8 @@ def main() -> int:
     parser.add_argument("--start-time-s", type=float)
     arguments = parser.parse_args()
 
-    from applications.fv_abl.workflow import (
-        _build_turbine_definition,
-        load_workflow,
-    )
+    from jaxwind.simulation.turbines import build_turbine_definition
+    from jaxwind.config.stages import load_workflow
     from jaxwind.domain import ScaleSystem
 
     workflow = load_workflow(arguments.config)
@@ -132,7 +131,7 @@ def main() -> int:
     output = arguments.output_directory or root / "averaged_wake"
     output.mkdir(parents=True, exist_ok=True)
 
-    with np.load(root / "main_flow_frames.npz") as archive:
+    with np.load(root / "main/flow_frames.npz") as archive:
         horizontal = np.asarray(archive["u_hub_yx"], dtype=np.float64)
         vertical = np.asarray(archive["u_center_zx"], dtype=np.float64)
         times = np.asarray(archive["time_seconds"], dtype=np.float64)
@@ -154,8 +153,8 @@ def main() -> int:
     rms_vertical = vertical.std(axis=0)
 
     input_root = workflow.options.input_directory or root
-    precursor = _stream_mean(input_root / "precursor_inflow" / "x_velocity.npy")
-    turbine_definition = _build_turbine_definition(workflow)
+    precursor = _stream_mean(input_root / "precursor/inflow" / "x_velocity.npy")
+    turbine_definition = build_turbine_definition(workflow)
     turbine = turbine_definition.to_actuator_disk(scales=ScaleSystem(1.0, 1.0))
     z_lower, z_upper, z_fraction = _linear_index(z, turbine.z)
     y_lower, y_upper, y_fraction = _linear_index(y, turbine.y)
@@ -195,9 +194,9 @@ def main() -> int:
     )
     metadata = {
         "schema": "jaxwind.averaged-wake.v1",
-        "source": str(root / "main_flow_frames.npz"),
+        "source": str(root / "main/flow_frames.npz"),
         "precursor_reference": str(
-            input_root / "precursor_inflow" / "x_velocity.npy"
+            input_root / "precursor/inflow" / "x_velocity.npy"
         ),
         "sample_count": int(selected_times.size),
         "time_start_seconds": float(selected_times[0]),

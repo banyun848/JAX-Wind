@@ -16,31 +16,29 @@ def main() -> int:
     import jax
     import jax.numpy as jnp
 
-    from applications.fv_abl.workflow import (
-        _build_turbine_forcing,
-        _load_inflow_block,
-        _load_solution,
-        _models,
-        load_workflow,
-    )
+    from jaxwind.simulation.turbines import build_turbine_forcing
+    from jaxwind.io.inflow import load_inflow_block
+    from jaxwind.io.abl_checkpoint import load_solution
+    from jaxwind.simulation.abl import build_models
+    from jaxwind.config.stages import load_workflow
     from jaxwind import (
         build_gmg_solver,
         build_tendency,
         divergence,
         enforce_open_velocity,
     )
-    from jaxwind.poisson import _apply_laplacian
+    from jaxwind.numerics.poisson import _apply_laplacian
 
     workflow = load_workflow(arguments.config)
     case = workflow.case.physical
     grid = case.physical_grid
     output = workflow.options.output_directory
-    solution = _load_solution(output / "main_final.npz", jnp)
+    solution = load_solution(output / "main/checkpoint.npz", jnp)
     step_index = int(solution.step)
-    inflow = _load_inflow_block(output / "precursor_inflow", step_index, step_index + 1, jnp)
+    inflow = load_inflow_block(output / "precursor/inflow", step_index, step_index + 1, jnp)
     inflow = type(inflow)(*(component[0] for component in inflow))
-    forcing = _build_turbine_forcing(workflow)
-    boundaries, momentum, _, _, _ = _models(
+    forcing = build_turbine_forcing(workflow)
+    boundaries, momentum, _, _, _ = build_models(
         workflow.case,
         periodic_x=False,
         forcing=forcing,

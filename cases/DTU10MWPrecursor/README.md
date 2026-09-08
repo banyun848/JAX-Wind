@@ -1,5 +1,9 @@
 # DTU 10-MW finite-volume AD-BEM benchmark
 
+> Run all commands below on a compute node, including configuration checks.
+> This case uses schema version 1. Historical outputs cannot be resumed;
+> regenerate inputs in the new format. See [verification](../../doc/verification.md).
+
 ## Finite-volume open-domain workflow
 
 [`fv_workflow.toml`](fv_workflow.toml) runs the same `128 x 64 x 256` domain
@@ -15,18 +19,18 @@ to an AeroDyn15-compatible DTU 10 MW OpenFAST deck, then inspect or run it:
 
 ```bash
 export JAXWIND_DTU10MW_FAST=/path/to/DTU_10MW_AeroDyn15.fst
-python -m applications.fv_abl.workflow \
-  cases/DTU10MWPrecursor/fv_workflow.toml --dry-run
+jaxwind check \
+  cases/DTU10MWPrecursor/fv_workflow.toml
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl.workflow \
-  cases/DTU10MWPrecursor/fv_workflow.toml --overwrite
+  jaxwind workflow \
+  cases/DTU10MWPrecursor/fv_workflow.toml
 ```
 
 The complete configuration advances 360,000 warmup steps, records 36,000
 precursor layers, and advances the turbine domain for 36,000 steps. The four
-memory-mappable inflow arrays occupy about 9.5 GB in float32, substantially less
-than the former 11-plane HDF5 recording. Use `--max-steps 2 --overwrite` for a
-full-resolution smoke chain.
+recorded inflow fields contain about 9.5 GB of uncompressed float32 data, substantially less
+than the former 11-plane HDF5 recording. Use `--max-steps 2` for a
+full-resolution paused stage; continue with `--resume`. Artifacts use NPZ chunks.
 
 The workflow preserves the physical domain, pressure driving, roughness, turbine
 geometry, fixed rotor speed, and stage durations while using the FV AMD closure

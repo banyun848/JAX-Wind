@@ -1,0 +1,38 @@
+# Run only on a compute node. Small self-producing dependency example.
+schema_version = 1
+
+[output]
+directory = "runs/low-mach-continuation-example"
+
+[stages.warmup]
+case = "../HITSZWindTunnel/fv_low_mach_warmup_256x64x32_900s.toml"
+operation = "simulation"
+
+[stages.warmup.overrides.case]
+profile_resampling = "linear"
+
+[stages.warmup.overrides.mesh]
+cells = [8, 8, 8]
+
+[stages.warmup.overrides.time]
+steps = 6
+chunk_steps = 2
+frame_count = 2
+
+[stages.continuation]
+case = "../HITSZWindTunnel/fv_low_mach_warmup_256x64x32_900s.toml"
+operation = "simulation"
+
+[stages.continuation.inputs]
+checkpoint = "@warmup/checkpoint"
+
+[stages.continuation.overrides.case]
+profile_resampling = "linear"
+
+[stages.continuation.overrides.mesh]
+cells = [8, 8, 8]
+
+[stages.continuation.overrides.time]
+steps = 6
+chunk_steps = 2
+frame_count = 2

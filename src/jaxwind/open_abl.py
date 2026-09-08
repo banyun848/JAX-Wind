@@ -11,14 +11,14 @@ from jaxwind.domain.grid import Grid
 
 from .abl import AtmosphericSolution
 from .buoyancy import LinearBoussinesqBuoyancy, boussinesq_tendency
-from .integrate import FlowModel, build_tendency
+from jaxwind.numerics.integrate import FlowModel, build_tendency
 from .open_boundary import (
     InflowPlane,
     enforce_open_scalar,
     enforce_open_velocity,
 )
-from .discretization import pressure_gradient
-from .poisson import PressurePoisson, project
+from jaxwind.numerics.discretization import pressure_gradient
+from jaxwind.numerics.poisson import PressurePoisson, project
 from .scalar import PassiveScalar, scalar_tendency
 from .sgs import eddy_viscosity
 from .state import OPEN, Boundaries, StaggeredVelocity

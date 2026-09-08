@@ -12,7 +12,11 @@ dependencies = [
     "tomli>=1.1.0; python_version < '3.11'",
 ]
 
+[project.scripts]
+jaxwind = "jaxwind.cli.main:main"
+
 [project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.6"]
 tools = ["h5py>=3.10"]
 # The finite-volume solver's GPU pressure solve. The package lives in the
 # external/jax-amg submodule; install it with 'pip install -e external/jax-amg'
@@ -30,6 +34,9 @@ pythonpath = ["src", "."]
 # backend, scaling, visualization, and publication-reproduction tests
 # remain available with: pytest -o 'python_files=test_*.py'
 python_files = [
+    "test_runtime_contract.py",
+    "test_case_schema.py",
+    "test_architecture.py",
     "test_poisson.py",
     "test_operators.py",
     "test_low_mach.py",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from applications.fv_abl.__main__ import parser, run
+from jaxwind.cli.abl import parser, run
 
 
 ROOT = Path(__file__).resolve().parents[1]

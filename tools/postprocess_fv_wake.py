@@ -12,6 +12,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from jaxwind.io.field_archive import open_fields
+from jaxwind.io.recorded_field import RecordedField
 
 
 def gaussian_deficit(
@@ -86,7 +88,7 @@ def precursor_statistics(
     batch_size: int = 256,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Stream the precursor plane to obtain mean, variance, and rotor TI."""
-    velocity = np.load(path, mmap_mode="r")
+    velocity = RecordedField(path)
     total = np.zeros(velocity.shape[1:], dtype=np.float64)
     total_square = np.zeros_like(total)
     count = 0
@@ -170,10 +172,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
 
-    from applications.fv_abl.workflow import (
-        _build_turbine_definition,
-        load_workflow,
-    )
+    from jaxwind.simulation.turbines import build_turbine_definition
+    from jaxwind.config.stages import load_workflow
     from jaxwind.domain import ScaleSystem
 
     workflow = load_workflow(arguments.config)
@@ -184,10 +184,10 @@ def main() -> int:
     grid = case.physical_grid
     output = arguments.output or workflow.options.output_directory / "wake_recovery"
     output.mkdir(parents=True, exist_ok=True)
-    result_path = workflow.options.output_directory / "main_final.npz"
-    inflow_path = workflow.options.output_directory / "precursor_inflow" / "x_velocity.npy"
+    result_path = workflow.options.output_directory / "main/checkpoint.npz"
+    inflow_path = workflow.options.output_directory / "precursor/inflow" / "x_velocity.npy"
 
-    turbine = _build_turbine_definition(workflow)
+    turbine = build_turbine_definition(workflow)
     disk = turbine.to_actuator_disk(scales=ScaleSystem(1.0, 1.0))
     diameter = 2.0 * disk.tip_radius
 
@@ -215,7 +215,7 @@ def main() -> int:
         )
     )
 
-    with np.load(result_path) as archive:
+    with open_fields(result_path) as archive:
         stored = {name: np.asarray(archive[name]) for name in archive.files}
     u_cell = 0.5 * (stored["velocity_x"][..., :-1] + stored["velocity_x"][..., 1:])
     instantaneous_centerline_velocity = interpolate_yz(
@@ -225,7 +225,7 @@ def main() -> int:
         dy_m=grid.dy,
         dz_m=grid.dz,
     )
-    frame_path = workflow.options.output_directory / "main_flow_frames.npz"
+    frame_path = workflow.options.output_directory / "main/flow_frames.npz"
     frames_used = 0
     frame_time_range = None
     if frame_path.exists():
@@ -381,7 +381,7 @@ def main() -> int:
             "mean_sampled_disk_axial_velocity_m_s": float(sampled[:, 0].mean()),
         },
         "precursor": {
-            "samples": int(np.load(inflow_path, mmap_mode="r").shape[0]),
+            "samples": int(RecordedField(inflow_path).shape[0]),
             "hub_reference_velocity_m_s": hub_reference_velocity,
             "rotor_reference_velocity_m_s": rotor_reference_velocity,
             "rotor_streamwise_turbulence_intensity": turbulence_intensity,

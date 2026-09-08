@@ -13,7 +13,7 @@ import jax.numpy as jnp
 from jaxwind.domain.grid import Grid
 
 from .metrics import center_distances
-from .discretization import cell_velocity
+from jaxwind.numerics.discretization import cell_velocity
 from .scalar import PassiveScalar
 from .sgs import (
     AnisotropicMinimumDissipation,

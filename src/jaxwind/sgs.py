@@ -34,7 +34,7 @@ from .metrics import (
     shaped_center_distances,
     shaped_widths,
 )
-from .discretization import tangential_z_gradient
+from jaxwind.numerics.discretization import tangential_z_gradient
 from .state import (
     Boundaries,
     StaggeredVelocity,

@@ -1,3 +1,6 @@
+schema_version = 1
+formulation = "boussinesq"
+
 [case]
 name = "hitsz_r9_fv_uniform_512x128x64_l24_low_mach_fresh_warmup"
 citation = "Yang, Lin & Zhou, Renewable Energy 220 (2024), 119625"
@@ -5,31 +8,32 @@ initial_profile = "fv_initial_loglaw_uniform_64.csv"
 reference_results = "fv_reference_results.json"
 seed = 2024
 
-[domain]
+[mesh]
 cells = [512, 128, 64]
 lengths_m = [24.0, 6.0, 3.6]
-
-
-[flow]
-pressure_acceleration_m_s2 = [0.004198491620939015, 0.0]
-geostrophic_velocity_m_s = [0.0, 0.0]
-advection_frame_velocity_m_s = [0.0, 0.0]
-coriolis_s = [0.0, 0.0]
-roughness_length_m = 1.6100320416141182e-5
-von_karman = 0.4
-
-[scalar]
-reference_value = 0.0
-surface_flux = 0.0
-buoyancy_acceleration_per_unit = 0.0
 
 [time]
 dt_seconds = 0.005
 steps = 180000
 
 
+cfl = 1.0
+chunk_steps = 600
+
 [numerics]
 dtype = "float32"
+
+pressure_backend = "fft"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 4
+gmg_postsweeps = 4
+gmg_anisotropy_aware = false
+time_integration = "fast-rk3"
+turbulent_prandtl = 0.4
+spectrum_diagnostic = "none"
+
+[output]
+directory = "outputs/hitsz_low_mach_fresh_warmup/fv_512x128x64_900s"
 
 [diagnostics]
 sample_start_step = 144000
@@ -40,21 +44,20 @@ reference_scalar = 1.0
 inversion_search_max_height_m = 3.6
 spectrum_heights_m = [0.876]
 
+[physics.flow]
+pressure_acceleration_m_s2 = [0.004198491620939015, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 1.6100320416141182e-5
+von_karman = 0.4
 
-[finite_volume]
-pressure_backend = "fft"
-gmg_tolerance = 1.0e-5
-gmg_presweeps = 4
-gmg_postsweeps = 4
-gmg_anisotropy_aware = false
-time_integration = "fast-rk3"
-cfl_ceiling = 1.0
-turbulent_prandtl = 0.4
-chunk_steps = 600
-spectrum_diagnostic = "none"
-output_directory = "outputs/hitsz_low_mach_fresh_warmup/fv_512x128x64_900s"
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0
 
-[finite_volume_workflow]
+[workflow]
 # Grid and physics contract for a fresh 900 s low-Mach warmup.
 warmup_steps = 180000
 precursor_steps = 36000

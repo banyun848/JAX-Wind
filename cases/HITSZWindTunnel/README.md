@@ -1,5 +1,9 @@
 # HITSZ R9 wind-tunnel-scale AD-BEM case
 
+> Run all commands below on a compute node, including configuration checks.
+> This case uses schema version 1. Historical outputs cannot be resumed;
+> regenerate inputs in the new format. See [verification](../../doc/verification.md).
+
 This active case transfers the strict offline-precursor workflow used by the
 DTU 10-MW benchmark to the 1:100 HITSZ wind-tunnel scale. It uses the R9 rotor
 speed and reference loads from Yang, Lin & Zhou, *Renewable Energy* 220
@@ -102,8 +106,8 @@ Run the complete FV workflow:
 
 ```bash
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl.workflow \
-  cases/HITSZWindTunnel/fv_workflow.toml --overwrite
+  jaxwind workflow \
+  cases/HITSZWindTunnel/fv_workflow.toml
 ```
 
 Profile the periodic warmup step with the same HITSZ configuration and write a
@@ -116,7 +120,7 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
 ```
 
 The FFT backend defaults to the custom chunked Thomas solve selected by
-`finite_volume.fft_method`. Compare the block-parallel SPIKE path on the same
+`numerics.fft_method`. Compare the block-parallel SPIKE path on the same
 case without editing the TOML by adding
 `--fft-method spike --spike-block-size 32`; `--thomas-chunk` controls the
 unrolled local Thomas sweep used by both methods.

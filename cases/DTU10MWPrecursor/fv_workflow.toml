@@ -1,3 +1,6 @@
+schema_version = 1
+formulation = "boussinesq"
+
 [case]
 name = "dtu10mw_adbem_fv_128x64x256"
 citation = "Bak et al. (2013), Description of the DTU 10 MW Reference Wind Turbine"
@@ -5,31 +8,30 @@ initial_profile = "fv_initial_profile.csv"
 reference_results = "fv_reference_results.json"
 seed = 2025
 
-[domain]
+[mesh]
 cells = [128, 64, 256]
 lengths_m = [4096.0, 1024.0, 1024.0]
-
-
-[flow]
-pressure_acceleration_m_s2 = [0.00015625, 0.0]
-geostrophic_velocity_m_s = [0.0, 0.0]
-advection_frame_velocity_m_s = [0.0, 0.0]
-coriolis_s = [0.0, 0.0]
-roughness_length_m = 0.001
-von_karman = 0.4
-
-[scalar]
-reference_value = 0.0
-surface_flux = 0.0
-buoyancy_acceleration_per_unit = 0.0
 
 [time]
 dt_seconds = 0.1
 steps = 360000
 
 
+chunk_steps = 100
+
 [numerics]
 dtype = "float32"
+
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 1
+gmg_postsweeps = 1
+time_integration = "ab2"
+turbulent_prandtl = 0.4
+spectrum_diagnostic = "none"
+
+[output]
+directory = "outputs/dtu10mw_adbem_fv_{pressure_backend}_128x64x256"
 
 [diagnostics]
 sample_start_step = 324000
@@ -40,29 +42,20 @@ reference_scalar = 1.0
 inversion_search_max_height_m = 1024.0
 spectrum_heights_m = [118.0]
 
+[physics.flow]
+pressure_acceleration_m_s2 = [0.00015625, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 0.001
+von_karman = 0.4
 
-[finite_volume]
-pressure_backend = "gmg"
-gmg_tolerance = 1.0e-5
-gmg_presweeps = 1
-gmg_postsweeps = 1
-time_integration = "ab2"
-turbulent_prandtl = 0.4
-chunk_steps = 100
-spectrum_diagnostic = "none"
-output_directory = "outputs/dtu10mw_adbem_fv_{pressure_backend}_128x64x256"
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0
 
-[finite_volume_workflow]
-warmup_steps = 360000
-precursor_steps = 36000
-main_steps = 36000
-record_plane = 0
-chunk_steps = 100
-output_directory = "outputs/dtu10mw_adbem_fv_workflow_128x64x256"
-main_pressure_force = false
-evolve_scalar = false
-
-[finite_volume_turbine]
+[physics.turbine]
 model = "openfast-ad-bem"
 openfast_model_environment = "JAXWIND_DTU10MW_FAST"
 x_m = 1000.0
@@ -75,3 +68,13 @@ smearing_azimuthal_elements = 64
 body_smoothing_width_m = 96.0
 nacelle_drag_coefficient = 1.0
 tower_drag_coefficient = 1.0
+
+[workflow]
+warmup_steps = 360000
+precursor_steps = 36000
+main_steps = 36000
+record_plane = 0
+chunk_steps = 100
+output_directory = "outputs/dtu10mw_adbem_fv_workflow_128x64x256"
+main_pressure_force = false
+evolve_scalar = false

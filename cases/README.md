@@ -1,7 +1,11 @@
 # Cases
 
+> Run all commands below on a compute node, including configuration checks.
+> This case uses schema version 1. Historical outputs cannot be resumed;
+> regenerate inputs in the new format. See [verification](../doc/verification.md).
+
 A case is data: physical parameters, finite-volume numerical controls, input
-fields, and optional reference evidence. Applications own composition,
+fields, and optional reference evidence. The package's simulation builders, shared runtime, and workflows own composition,
 execution, diagnostics, and output effects.
 
 - [`Andren1994`](Andren1994/README.md) is a neutral ABL comparison.
@@ -14,13 +18,17 @@ execution, diagnostics, and output effects.
 - [`HITSZLiquidNitrogenJet`](HITSZLiquidNitrogenJet/README.md) contains mapped
   incompressible and low-Mach cryogenic jet cases.
 
-Run a case by passing its TOML file to the matching finite-volume application:
+Resolve a case using the unified CLI:
 
 ```bash
-python -m applications.fv_abl cases/Andren1994/config.toml --dry-run
-python -m applications.fv_abl cases/GABLS1/config.toml --dry-run
-python -m applications.fv_abl.workflow \
-  cases/DTU10MWPrecursor/fv_workflow.toml --dry-run
-python -m applications.fv_ln2_jet \
-  cases/HITSZLiquidNitrogenJet/fv_256.toml --dry-run
+jaxwind check cases/Andren1994/config.toml
+jaxwind check cases/GABLS1/config.toml
+jaxwind check \
+  cases/DTU10MWPrecursor/fv_workflow.toml
+jaxwind check \
+  cases/HITSZLiquidNitrogenJet/fv_256.toml
 ```
+
+See [the explicit continuation workflow](workflows/low_mach_continuation.toml)
+for a self-producing new-format checkpoint dependency. Change its small step
+counts for production; do not substitute historical checkpoints.

@@ -215,7 +215,7 @@ class FastRungeKuttaTest(unittest.TestCase):
 
     def counting_poisson(self, grid: UniformGrid):
         """A pressure solver that records how often it is invoked."""
-        from jaxwind.poisson import PressurePoisson
+        from jaxwind.numerics.poisson import PressurePoisson
 
         base = build_pressure_poisson(grid, backend="fft")
         calls: list[int] = []

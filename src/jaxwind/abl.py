@@ -11,9 +11,9 @@ import jax.numpy as jnp
 from jaxwind.domain.grid import Grid
 
 from .buoyancy import LinearBoussinesqBuoyancy, boussinesq_tendency
-from .integrate import FlowModel, build_adaptive_run, build_tendency
-from .discretization import pressure_gradient
-from .poisson import PressurePoisson, project
+from jaxwind.numerics.integrate import FlowModel, build_adaptive_run, build_tendency
+from jaxwind.numerics.discretization import pressure_gradient
+from jaxwind.numerics.poisson import PressurePoisson, project
 from .scalar import PassiveScalar, scalar_tendency
 from .sgs import eddy_viscosity
 from .state import Boundaries, StaggeredVelocity, enforce_impermeability, zeros

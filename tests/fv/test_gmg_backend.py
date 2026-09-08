@@ -17,7 +17,7 @@ from jaxwind import (
     pressure_gradient,
     project,
 )
-from jaxwind.poisson import (
+from jaxwind.numerics.poisson import (
     _build_gmg_levels,
     _coarsening_factors,
     _prolong,

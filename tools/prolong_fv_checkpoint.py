@@ -16,13 +16,15 @@ from pathlib import Path
 import sys
 
 import numpy as np
+from jaxwind.io.field_archive import open_fields, save_transformed_checkpoint
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from applications.fv_abl.workflow import _models, load_workflow
+from jaxwind.simulation.abl import build_models
+from jaxwind.config.stages import load_workflow
 
 
 def _indices_and_weights(
@@ -215,7 +217,7 @@ def prolong_fv_checkpoint(
     ):
         raise ValueError("each target axis must be an integer refinement")
 
-    with np.load(source_checkpoint, allow_pickle=False) as archive:
+    with open_fields(source_checkpoint) as archive:
         u = np.asarray(archive["velocity_x"])
         v = np.asarray(archive["velocity_y"])
         w = np.asarray(archive["velocity_z"])
@@ -296,8 +298,8 @@ def prolong_fv_checkpoint(
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output,
+    save_transformed_checkpoint(
+        output, target_config,
         velocity_x=np.asarray(projected.x),
         velocity_y=np.asarray(projected.y),
         velocity_z=np.asarray(projected.z),
@@ -383,7 +385,7 @@ def prolong_low_mach_checkpoint(
         "time",
         "step",
     }
-    with np.load(source_checkpoint, allow_pickle=False) as archive:
+    with open_fields(source_checkpoint) as archive:
         missing = required - set(archive.files)
         if missing:
             raise ValueError(
@@ -401,10 +403,10 @@ def prolong_low_mach_checkpoint(
         fine_u = prolong_periodic_face_field(u, target_shape, face_axis=2)
         fine_v = prolong_periodic_face_field(v, target_shape, face_axis=1)
         fine_w = _prolong_vertical_field(w, target_shape)
-        source_wall = _models(
+        source_wall = build_models(
             source_workflow.case, periodic_x=True, evolve_scalar=False
         )[1].surface
-        target_wall = _models(
+        target_wall = build_models(
             target_workflow.case, periodic_x=True, evolve_scalar=False
         )[1].surface
         if source_wall is None or target_wall is None:
@@ -515,8 +517,8 @@ def prolong_low_mach_checkpoint(
     dynamic_pressure = pressure + np.asarray(pressure_correction)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output,
+    save_transformed_checkpoint(
+        output, target_config,
         lengths_m=np.asarray((target_grid.lx, target_grid.ly, target_grid.lz)),
         x_faces_m=np.asarray(target_grid.x_faces),
         y_faces_m=np.asarray(target_grid.y_faces),

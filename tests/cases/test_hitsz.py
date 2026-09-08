@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from applications.fv_ln2_jet.run import load_case
+from jaxwind.config.jet import load_case
 
 
 def test_tracked_hitsz_case_files_encode_their_benchmark_contracts() -> None:

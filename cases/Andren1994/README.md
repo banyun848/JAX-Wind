@@ -1,8 +1,12 @@
 # Andrén et al. (1994) neutral ABL case
 
+> Run all commands below on a compute node, including configuration checks.
+> This case uses schema version 1. Historical outputs cannot be resumed;
+> regenerate inputs in the new format. See [verification](../../doc/verification.md).
+
 This data-only case is configured by the fixed-schema
 [`config.toml`](config.toml) and composed by the finite-volume
-[`fv_abl`](../../applications/fv_abl/config.py) application. The TOML
+[`fv_abl`](../../src/jaxwind/config/abl.py) application. The TOML
 contains canonical SI inputs: the grid, Coriolis and
 geostrophic values, wall roughness, passive-scalar flux, initial profile,
 physical times, and numerical controls. The composition owns SI-to-execution
@@ -12,19 +16,20 @@ There is no neutral/stable/convective selector. This case's scalar is
 explicitly passive, so it has no buoyancy feedback and the resolved stability
 is the neutral limit.
 
-The schema has no solver registry or case-specific solver. The `[finite_volume]`
-table selects pressure, integration, closure, diagnostic, and output settings;
+The schema has no solver registry or case-specific solver. The `[numerics]`
+table selects pressure, integration, and closure settings; `[time]`,
+`[diagnostics]`, and `[output]` declare their own controls;
 unknown tables and keys are rejected. Run the configured case with:
 
 ```bash
-python -m applications.fv_abl cases/Andren1994/config.toml --dry-run
+jaxwind check cases/Andren1994/config.toml
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl cases/Andren1994/config.toml \
-  --max-steps 10 --output /tmp/andren1994-fv-smoke --overwrite
+  jaxwind run cases/Andren1994/config.toml \
+  --max-steps 10 --output /tmp/andren1994-fv-smoke
 ```
 
 This FV realization uses AMD for momentum and its eddy viscosity for passive-
-scalar diffusion. `resolved_case.json` and `summary.json` record that choice. During the configured
+scalar diffusion. `resolved_case.toml` and `summary.json` record that choice. During the configured
 statistics window it writes total momentum and scalar fluxes, signed AMD TKE
 transfer, momentum and scalar diffusivities, streamwise spectra, total resolved
 TKE history, and momentum-stationarity metrics. AMD has no prognostic SGS
@@ -32,34 +37,33 @@ TKE, so the reported modeled SGS-TKE contribution is explicitly zero rather than
 
 ## FV warmup, precursor, and enforced-main workflow
 
-The `[finite_volume_workflow]` table in the same case TOML supplies only stage
+The `[workflow]` table in the same case TOML supplies only stage
 lengths, the recorded x-plane, chunking, and output location. The workflow
 fixes the pressure and boundary choices required by each stage: warmup and
 precursor are periodic and use FFT, while the enforced main run is open in x
-and uses GMG. Display the resolved contract without starting JAX:
+and uses GMG. Display the resolved contract without constructing simulation fields:
 
 ```bash
-python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --dry-run
+jaxwind check \
+  cases/Andren1994/config.toml
 ```
 
 Run the complete chain, or run each restartable stage separately:
 
 ```bash
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --overwrite
+  jaxwind workflow \
+  cases/Andren1994/config.toml
 
-python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --stage warmup --overwrite
-python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --stage precursor
-python -m applications.fv_abl.workflow \
-  cases/Andren1994/config.toml --stage main
+jaxwind workflow \
+  cases/Andren1994/config.toml --stage warmup
+jaxwind workflow \
+  cases/Andren1994/config.toml --stage precursor --resume
+jaxwind workflow \
+  cases/Andren1994/config.toml --stage main --resume
 ```
 
-The precursor stores exactly one `yz` layer per time step in four memory-
-mappable arrays under `precursor_inflow/`: the three staggered velocity
+The precursor stores exactly one `yz` layer per time step in versioned NPZ chunks under `precursor/inflow/`: the three staggered velocity
 components and scalar. The main domain directly enforces the matching layer at
 its inlet. At the outlet, tangential velocity and scalar use the three-point
 second-order zero-gradient extrapolation; pressure projection selects the
@@ -67,7 +71,7 @@ normal outflow velocity using inlet-Neumann/outlet-Dirichlet pressure
 conditions. Because x is not periodic in this stage, attempting to construct
 its pressure solve with FFT is rejected.
 
-For a short end-to-end smoke run, `--max-steps 2` caps every stage while
+For a short end-to-end smoke run, `--max-steps 2` pauses the current stage after two steps while
 retaining the same boundary and backend choices.
 
 The reference profile and published comparison envelope live under

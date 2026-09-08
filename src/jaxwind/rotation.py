@@ -7,7 +7,7 @@ import math
 
 import jax.numpy as jnp
 
-from .discretization import cell_velocity
+from jaxwind.numerics.discretization import cell_velocity
 from .state import StaggeredVelocity
 
 

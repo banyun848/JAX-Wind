@@ -18,7 +18,7 @@ set -euo pipefail
 #     tools/submit_fv_abl_rocm_single.sh
 #   sbatch --export=ALL,CASE_DIR=cases/HITSZWindTunnel,STAGE=all \
 #     tools/submit_fv_abl_rocm_single.sh
-#   sbatch --export=ALL,CONFIG=cases/HITSZWindTunnel/fv_workflow.toml,OVERWRITE=1 \
+#   sbatch --export=ALL,CONFIG=cases/HITSZWindTunnel/fv_workflow.toml,RESUME=1 \
 #     tools/submit_fv_abl_rocm_single.sh
 #
 # CONFIG overrides CASE_DIR/CONFIG_NAME. Relative paths are resolved from
@@ -30,7 +30,8 @@ CONFIG="${CONFIG:-${CASE_DIR}/${CONFIG_NAME}}"
 STAGE="${STAGE:-warmup}"
 CONDA_ENV="${CONDA_ENV:-jax060}"
 MAX_STEPS="${MAX_STEPS:-}"
-OVERWRITE="${OVERWRITE:-0}"
+RESUME="${RESUME:-0}"
+RUN_OUTPUT="${RUN_OUTPUT:-}"
 JOB_META_DIR="${JOB_META_DIR:-slurm_runs/${SLURM_JOB_ID}}"
 
 cd "${REPO_ROOT}"
@@ -46,8 +47,8 @@ case "${STAGE}" in
         exit 2
         ;;
 esac
-if [[ "${OVERWRITE}" != "0" && "${OVERWRITE}" != "1" ]]; then
-    echo "ERROR: OVERWRITE must be 0 or 1" >&2
+if [[ "${RESUME}" != "0" && "${RESUME}" != "1" ]]; then
+    echo "ERROR: RESUME must be 0 or 1" >&2
     exit 2
 fi
 if [[ -n "${MAX_STEPS}" && ! "${MAX_STEPS}" =~ ^[1-9][0-9]*$ ]]; then
@@ -104,12 +105,18 @@ print("JAX version:", jax.__version__)
 print("JAX devices:", jax.devices("rocm"))
 PY
 
-workflow_args=("${CONFIG}" --stage "${STAGE}")
+workflow_args=(workflow "${CONFIG}")
+if [[ "${STAGE}" != "all" ]]; then
+    workflow_args+=(--stage "${STAGE}")
+fi
+if [[ -n "${RUN_OUTPUT}" ]]; then
+    workflow_args+=(--output "${RUN_OUTPUT}")
+fi
 if [[ -n "${MAX_STEPS}" ]]; then
     workflow_args+=(--max-steps "${MAX_STEPS}")
 fi
-if [[ "${OVERWRITE}" == "1" ]]; then
-    workflow_args+=(--overwrite)
+if [[ "${RESUME}" == "1" ]]; then
+    workflow_args+=(--resume)
 fi
 
 srun \
@@ -117,7 +124,7 @@ srun \
     --cpus-per-task="${SLURM_CPUS_PER_TASK}" \
     --tres-per-task=gres/dcu:1 \
     --kill-on-bad-exit=1 \
-    python -u -m applications.fv_abl.workflow "${workflow_args[@]}"
+    python -u -m jaxwind "${workflow_args[@]}"
 
 echo
 echo "Workflow completed successfully: $(date --iso-8601=seconds)"

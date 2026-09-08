@@ -313,14 +313,12 @@ def main() -> int:
     if arguments.fps <= 0:
         raise ValueError("--fps must be positive")
 
-    from applications.fv_abl.workflow import (
-        _build_turbine_definition,
-        load_workflow,
-    )
+    from jaxwind.simulation.turbines import build_turbine_definition
+    from jaxwind.config.stages import load_workflow
     from jaxwind.domain import ScaleSystem
 
     workflow = load_workflow(arguments.config)
-    source = workflow.options.output_directory / "main_flow_frames.npz"
+    source = workflow.options.output_directory / "main/flow_frames.npz"
     if not source.exists():
         raise FileNotFoundError(f"missing FV main frames: {source}")
     with np.load(source) as archive:
@@ -342,7 +340,7 @@ def main() -> int:
     if fields.ndim != 3 or fields.shape[0] == 0:
         raise ValueError("u_hub_yx must contain at least one (y, x) frame")
 
-    turbine = _build_turbine_definition(workflow)
+    turbine = build_turbine_definition(workflow)
     disk = (
         None
         if turbine is None
