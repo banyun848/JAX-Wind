@@ -62,12 +62,23 @@ bash "$JAXWIND_REPO/tools/verification/run.sh" candidate \
   --output /path/to/results/candidate-cpu --platform cpu
 ```
 
+The coordinator pins `PYTHONHASHSEED=0` in every check subprocess and enables
+`--xla_gpu_deterministic_ops=true` for CUDA. On A100/JAX 0.10.0, the default
+GPU mode produced process-dependent float32 initialization projection rounding
+that exceeded the pressure comparison tolerance; a fixed Python seed alone was
+insufficient across the moved modules. Reports record the seed and XLA flags,
+and comparisons require them to match. Recapture older baseline reports that
+do not record this environment. These controlled smoke timings do not replace
+production performance measurements with your intended compiler settings.
+
 Both phases use 8×8×8 meshes and six-step trajectories. Cryogenic examples
 use 32 parcel slots and two injected parcels per step. Scenarios cover periodic
 Boussinesq flow, adaptive stepping, warmup/precursor/open flow, periodic low-Mach
 flow, and incompressible/low-Mach cryogenic jets. Each runs in a fresh process.
-Both phases explicitly resample the original tabulated profiles onto the same
-small mesh before constructing fields. The baseline low-Mach source contains a
+The smoke inputs preserve the same frame requests and block boundaries in both
+phases; adding candidate-only frame requests can change float32 open-flow pressure
+rounding. Both phases explicitly resample the original tabulated profiles onto
+the same small mesh before constructing fields. The baseline low-Mach source contains a
 stale `physical.pressure.dtype` access although its case exposes `physical.dtype`.
 That scenario supplies a recorded assembly-only property adapter; it does not
 edit the baseline checkout or change pressure/integration kernels. The candidate

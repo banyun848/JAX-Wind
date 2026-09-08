@@ -87,8 +87,17 @@ def candidate_case(source, relative, output, *, low=False):
     doc["diagnostics"].update(sample_start_step=0, sample_every_steps=2)
     doc["output"]["directory"] = str(output / "run")
     if "workflow" in doc:
-        doc["workflow"].update(warmup_steps=6, precursor_steps=6, main_steps=6, record_plane=1, chunk_steps=2, precursor_frame_count=2, main_frame_count=2,
+        doc["workflow"].update(warmup_steps=6, precursor_steps=6, main_steps=6, record_plane=1, chunk_steps=2,
                                output_directory=str(output / "workflow"))
+        # Match legacy_case: bound existing frame requests without adding new
+        # ones, since frame boundaries also split compiled advance blocks.
+        for key in ("precursor_frame_count", "main_frame_count"):
+            if key in doc["workflow"]:
+                doc["workflow"][key] = 2
+        if low:
+            for key in ("precursor_dt_seconds", "main_dt_seconds"):
+                if key in doc["workflow"]:
+                    doc["workflow"][key] = .01
     return ResolvedCase(case.source, doc)
 
 
@@ -111,7 +120,9 @@ def main():
     jax.config.update("jax_enable_x64", False)
     legacy = args.phase == "baseline"
     report = {"scenario": args.scenario, "phase": args.phase, "jax": jax.__version__,
-              "devices": [str(device) for device in jax.devices()], "dtype": "float32"}
+              "devices": [str(device) for device in jax.devices()], "dtype": "float32",
+              "python_hash_seed": os.environ.get("PYTHONHASHSEED"),
+              "xla_flags": os.environ.get("XLA_FLAGS", "")}
     report["revision"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
     base_relative = "cases/Andren1994/config.toml"
     if args.scenario in {"boussinesq", "adaptive", "open"}:
@@ -218,6 +229,11 @@ def main():
     report["status"] = "captured"
     if args.baseline:
         baseline_report = json.loads((args.baseline / "report.json").read_text())
+        seed = report["python_hash_seed"]
+        if seed is None or seed == "random" or seed != baseline_report.get("python_hash_seed"):
+            raise ValueError("baseline and candidate require the same explicit PYTHONHASHSEED; recapture with run.sh")
+        if report["xla_flags"] != baseline_report.get("xla_flags"):
+            raise ValueError("baseline and candidate require matching XLA_FLAGS; recapture with run.sh")
         if report["jax"] != baseline_report["jax"] or report["devices"] != baseline_report["devices"]:
             raise ValueError("baseline and candidate require matching JAX versions and devices")
         with np.load(args.baseline / "state.npz", allow_pickle=False) as expected:

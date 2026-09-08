@@ -27,9 +27,13 @@ def main():
         parser.error("candidate requires --baseline")
     source, output = args.source.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    environment = dict(os.environ, JAX_PLATFORMS=args.platform, PYTHONPATH=os.pathsep.join((str(source / "src"), str(source))))
+    # Keep fresh-process compilation reproducible across the module moves.
+    environment = dict(os.environ, PYTHONHASHSEED="0", JAX_PLATFORMS=args.platform, PYTHONPATH=os.pathsep.join((str(source / "src"), str(source))))
+    if args.platform == "cuda":
+        environment["XLA_FLAGS"] = (environment.get("XLA_FLAGS", "") +
+                                    " --xla_gpu_deterministic_ops=true").strip()
     report = {"phase": args.phase, "source": str(source), "platform": args.platform,
-              "python": sys.executable, "started": time.time(), "checks": [], "status": "running"}
+              "python": sys.executable, "python_hash_seed": environment["PYTHONHASHSEED"], "xla_flags": environment.get("XLA_FLAGS", ""), "started": time.time(), "checks": [], "status": "running"}
     summary = output / "summary.json"
 
     def check(name, command):
