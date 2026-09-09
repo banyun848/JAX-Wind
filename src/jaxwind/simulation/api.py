@@ -65,6 +65,10 @@ def _build(case) -> Simulation:
     from jaxwind.simulation.jet import build_simulation as build_native
     native = load_native(case)
     grid, jet, microphysics, initial, advance, _ = build_native(native)
+    if native.cfl is not None:
+        return Simulation(case, grid, initial,
+                          lambda state, controls: advance(state, controls.target_time, controls.count),
+                          lambda state: state.last_cfl, adaptive=True)
     courant = jax.jit(lambda state: courant_number(state.velocity, grid, dt))
     return Simulation(case, grid, initial, lambda state, controls: advance(state, controls.count), courant)
 

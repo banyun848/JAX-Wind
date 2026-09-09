@@ -109,7 +109,7 @@ def validate(document: dict) -> None:
             raise ValueError("time.frame_count must be an integer between zero and steps")
     if "cfl" in time:
         _positive(time["cfl"], "time.cfl")
-        if document["formulation"] != "boussinesq":
+        if document["formulation"] not in {"boussinesq", "cryogenic-low-mach", "cryogenic-incompressible"}:
             raise ValueError("this formulation uses fixed timesteps; adaptive CFL is unsupported")
     if "mesh" in document:
         mesh = document["mesh"]
