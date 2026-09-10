@@ -53,7 +53,10 @@ class Observer:
         if frame_count:
             from .frames import frame_steps
             upcoming = [item for item in frame_steps(settings["steps"], frame_count) if item > step]
-            if upcoming and not self.simulation.adaptive:
+            if self.simulation.adaptive and len(self.frames) < frame_count:
+                period = (metadata["target_time"] - metadata["initial_time"]) / frame_count
+                target = min(target, metadata["initial_time"] + (len(self.frames) + 1) * period)
+            elif upcoming and not self.simulation.adaptive:
                 count = min(count, upcoming[0] - step)
         checkpoint_every = settings.get("checkpoint_every_steps")
         if checkpoint_every and not self.simulation.adaptive:
@@ -66,6 +69,9 @@ class Observer:
         from jaxwind import divergence
         row = {"step": int(state.step), "time_hours": float(state.time) / 3600.,
                "maximum_cfl": float(self.simulation.courant(state))}
+        if hasattr(state, "last_dt"):
+            row["dt_seconds"] = float(state.last_dt)
+            row["rejected_steps"] = int(state.rejected_steps)
         if hasattr(state, "continuity_error"):
             row["continuity_residual_kg_m3_s"] = float(jnp.max(jnp.abs(state.continuity_error)))
         else:
@@ -104,7 +110,14 @@ class Observer:
         relative_step = int(state.step) - metadata["initial_step"]
         if frame_count and relative_step != self.last_frame:
             from .frames import frame_steps
-            if relative_step in frame_steps(settings["steps"], frame_count):
+            if self.simulation.adaptive:
+                period = (metadata["target_time"] - metadata["initial_time"]) / frame_count
+                due_time = metadata["initial_time"] + (len(self.frames) + 1) * period
+                tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
+                due = len(self.frames) < frame_count and float(state.time) >= due_time - tolerance
+            else:
+                due = relative_step in frame_steps(settings["steps"], frame_count)
+            if due:
                 self.frames.append(self._frame(state))
                 self.last_frame = relative_step
 

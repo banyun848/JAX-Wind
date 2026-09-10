@@ -858,6 +858,7 @@ def _apply_laplacian(
     *,
     periodic_x: bool = True,
     periodic_y: bool = True,
+    open_x_low: bool = False,
     volume_integrated: bool | None = None,
 ) -> jnp.ndarray:
     """Apply the matrix-free negative pressure Laplacian."""
@@ -867,6 +868,7 @@ def _apply_laplacian(
             grid,
             periodic_x=periodic_x,
             periodic_y=periodic_y,
+            open_x_low=open_x_low,
         ),
         grid,
     )
@@ -886,6 +888,7 @@ def _mapped_diagonal_stencil(
     *,
     periodic_x: bool,
     periodic_y: bool,
+    open_x_low: bool = False,
 ) -> jnp.ndarray:
     """Diagonal of the symmetric volume-integrated mapped operator."""
     hx, hy, hz = grid.x_widths, grid.y_widths, grid.z_widths
@@ -910,6 +913,8 @@ def _mapped_diagonal_stencil(
             x_factor[1:] += 1.0 / dx_faces[1:-1]
             x_factor[:-1] += 1.0 / dx_faces[1:-1]
         x_factor[-1] += 1.0 / dx_faces[-1]
+        if open_x_low:
+            x_factor[0] += 1.0 / dx_faces[0]
         transverse = ((np.arange(nx) > 0) & (np.arange(nx) < nx - 1)).astype(
             np.float64
         )
@@ -946,6 +951,7 @@ def _diagonal_stencil(
     *,
     periodic_x: bool = True,
     periodic_y: bool = True,
+    open_x_low: bool = False,
     volume_integrated: bool | None = None,
 ) -> jnp.ndarray:
     """Diagonal of the periodic or mixed-boundary negative Laplacian."""
@@ -956,7 +962,8 @@ def _diagonal_stencil(
     )
     if integrated:
         return _mapped_diagonal_stencil(
-            grid, dtype, periodic_x=periodic_x, periodic_y=periodic_y
+            grid, dtype, periodic_x=periodic_x, periodic_y=periodic_y,
+            open_x_low=open_x_low,
         )
     inverse_dx2 = 1.0 / grid.dx**2
     inverse_dy2 = 1.0 / grid.dy**2
@@ -973,6 +980,10 @@ def _diagonal_stencil(
         horizontal_x = np.full(grid.nx, 2.0 * inverse_dx2)
         horizontal_x[0] = inverse_dx2
         horizontal_x[-1] = 3.0 * inverse_dx2
+        if open_x_low:
+            horizontal_x[0] = 3.0 * inverse_dx2
+            if grid.nx == 1:
+                horizontal_x[0] = 4.0 * inverse_dx2
     transverse = (
         np.ones(grid.nx)
         if periodic_x
@@ -1368,6 +1379,7 @@ def build_gmg_solver(
     dtype: str = "float64",
     periodic_x: bool = True,
     periodic_y: bool = True,
+    open_x_low: bool = False,
     tolerance: float | None = None,
     max_iterations: int = 200,
     presweeps: int = 2,
@@ -1400,6 +1412,8 @@ def build_gmg_solver(
     compatible (zero-mean) right-hand side keeps every PCG residual zero-mean
     automatically, with no explicit projection needed inside the iteration.
     """
+    if open_x_low and periodic_x:
+        raise ValueError("an upstream pressure outlet requires nonperiodic x")
     resolved = np.dtype(dtype)
     if tolerance is None:
         tolerance = default_tolerance(resolved)
@@ -1418,6 +1432,7 @@ def build_gmg_solver(
             resolved,
             periodic_x=periodic_x,
             periodic_y=periodic_y,
+            open_x_low=open_x_low,
             volume_integrated=volume_integrated,
         )
         for level in levels[:-1]
@@ -1445,6 +1460,7 @@ def build_gmg_solver(
                 coarse_grid,
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
+                open_x_low=open_x_low,
                 volume_integrated=volume_integrated,
             ).reshape(-1)
 
@@ -1486,6 +1502,7 @@ def build_gmg_solver(
                 levels[level],
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
+                open_x_low=open_x_low,
                 volume_integrated=volume_integrated,
             )
             pressure = pressure + omega * residual / diagonals[level]
@@ -1500,6 +1517,7 @@ def build_gmg_solver(
             levels[level],
             periodic_x=periodic_x,
             periodic_y=periodic_y,
+            open_x_low=open_x_low,
             volume_integrated=volume_integrated,
         )
         coarse_rhs = _restrict(
@@ -1534,6 +1552,7 @@ def build_gmg_solver(
                 grid,
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
+                open_x_low=open_x_low,
                 volume_integrated=volume_integrated,
             )
             pressure = pressure + v_cycle(residual, 0)
@@ -1551,6 +1570,7 @@ def build_gmg_solver(
                 grid,
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
+                open_x_low=open_x_low,
                 volume_integrated=volume_integrated,
             ).reshape(-1)
 
@@ -1577,6 +1597,7 @@ class PressurePoisson:
     linear_solver: LinearSolver
     periodic_x: bool = True
     periodic_y: bool = True
+    open_x_low: bool = False
 
     def solve(
         self,
@@ -1611,7 +1632,8 @@ class PressurePoisson:
         whenever the right-hand side comes from a divergence.
         """
         applied = divergence(pressure_gradient(
-            pressure, self.grid, periodic_x=self.periodic_x, periodic_y=self.periodic_y
+            pressure, self.grid, periodic_x=self.periodic_x, periodic_y=self.periodic_y,
+            open_x_low=self.open_x_low,
         ), self.grid)
         error = applied - right_hand_side
         if self.periodic_x:
@@ -1643,11 +1665,14 @@ def build_pressure_poisson(
     backend: str = "amg",
     periodic_x: bool = True,
     periodic_y: bool = True,
+    open_x_low: bool = False,
     dtype: str = "float64",
     reference_cell: int | None = 0,
     config: Mapping[str, Any] | None = None,
 ) -> PressurePoisson:
     """Assemble the pressure operator and attach the requested solver."""
+    if open_x_low and (periodic_x or backend != "gmg"):
+        raise ValueError("two pressure outlets require nonperiodic x and GMG")
     if backend == "fft" and (not periodic_x or not periodic_y):
         raise ValueError("the FFT pressure backend requires periodic x and y")
     if backend == "fft":
@@ -1689,9 +1714,10 @@ def build_pressure_poisson(
                 dtype=dtype,
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
+                open_x_low=open_x_low,
                 **dict(config or {}),
             )
-        return PressurePoisson(grid, matrix, solver, periodic_x, periodic_y)
+        return PressurePoisson(grid, matrix, solver, periodic_x, periodic_y, open_x_low)
     matrix = assemble_pressure_matrix(
         grid,
         dtype=dtype,
@@ -1728,7 +1754,8 @@ def project(
         initial_pressure,
     )
     gradient = pressure_gradient(
-        pressure, grid, periodic_x=poisson.periodic_x, periodic_y=poisson.periodic_y
+        pressure, grid, periodic_x=poisson.periodic_x, periodic_y=poisson.periodic_y,
+        open_x_low=poisson.open_x_low,
     )
     corrected = StaggeredVelocity(
         velocity.x - dt * gradient.x,

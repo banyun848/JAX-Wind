@@ -95,6 +95,7 @@ def pressure_gradient(
     *,
     periodic_x: bool = True,
     periodic_y: bool = True,
+    open_x_low: bool = False,
 ) -> StaggeredVelocity:
     """Face-normal gradient of a cell-centred field."""
     if periodic_x:
@@ -103,7 +104,10 @@ def pressure_gradient(
         )
     else:
         distances = center_distances(grid, 2, periodic=False, dtype=pressure.dtype)
-        inlet = jnp.zeros_like(pressure[..., :1])
+        inlet = (
+            pressure[..., :1] / distances[0]
+            if open_x_low else jnp.zeros_like(pressure[..., :1])
+        )
         interior = (pressure[..., 1:] - pressure[..., :-1]) / distances[
             None, None, 1:-1
         ]

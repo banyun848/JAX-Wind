@@ -125,10 +125,32 @@ def enforce_open_scalar(
     return _second_order_outflow(scalar.at[..., 0].set(plane.scalar))
 
 
+def enforce_two_outlet_velocity(
+    velocity: StaggeredVelocity,
+) -> StaggeredVelocity:
+    """Extrapolate both x ends; pressure projection sets the final normal flux."""
+    def both(field):
+        field = _second_order_outflow(field)
+        return field.at[..., 0].set((4.0 * field[..., 1] - field[..., 2]) / 3.0)
+
+    return enforce_impermeability(StaggeredVelocity(
+        both(velocity.x), both(velocity.y), both(velocity.z),
+    ))
+
+
+def enforce_two_outlet_scalar(scalar, velocity, ambient):
+    """Zero-gradient outflow and ambient scalar on pressure-driven backflow."""
+    left = jnp.where(velocity.x[..., 0] > 0.0, ambient, scalar[..., 1])
+    right = jnp.where(velocity.x[..., -1] < 0.0, ambient, scalar[..., -2])
+    return scalar.at[..., 0].set(left).at[..., -1].set(right)
+
+
 __all__ = [
     "InflowPlane",
     "enforce_open_scalar",
     "enforce_open_velocity",
+    "enforce_two_outlet_velocity",
+    "enforce_two_outlet_scalar",
     "extract_inflow_plane",
     "periodic_to_open_velocity",
     "validate_inflow_plane",

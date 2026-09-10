@@ -144,3 +144,88 @@ the resulting wake with the TI-consistent Gaussian model. The two-section
 velocity-plus-scalar recording is expected to use about 10.4 GB (9.7 GiB)
 without compression. This case is configured but its wake acceptance envelope
 should only be established after the first completed production run.
+
+## Jet alone with two streamwise outlets
+
+`fv_1024x256x512_l24_jet_only_two_outlets_1s.toml` runs the existing embedded
+nitrogen source in initially still air, without a turbine, precursor, imposed
+inflow, or background pressure forcing. The 24 x 6 x 3.6 m domain has
+1024 x 256 x 512 cells (dx=dy=0.0234375 m, dz=0.00703125 m).
+Both x faces have zero pressure correction at the exterior face and extrapolated
+velocity; pressure-driven backflow uses ambient temperature and composition.
+The y sidewalls and floor retain wall-model stress; the ceiling remains
+impermeable and free-slip. Open boundaries can admit entrained ambient air;
+"no inflow" means no prescribed wind, not a prohibition on pressure-driven flow.
+
+The case uses low-Mach flow, matrix-free GMG, AMD, and RK3. The initial run is
+1 s, with dt=0.00025 s and 4000 steps. It inherits the existing 0.0125 kg/s,
+2 mm bore, 4.935894 m/s fully vaporized source at (6.3, 3.0, 0.876) m, including
+its local latent-heat sink. The proposed shared spray framework is not yet
+implemented. This is an initial transient run, not a converged far-field study.
+
+On a compute node, run `jaxwind run` with this case. On Raven, submit from the
+repository root with:
+
+```bash
+sbatch tools/submit_hitsz_jet_two_outlets.sh
+```
+
+The submission uses a distinct output directory per job. Override scheduler
+resources and `JAXWIND_PYTHON` for other environments. The 134,217,728-cell case
+requires a full-size memory check; small-grid validation does not establish
+that it fits a particular GPU.
+
+For interactive execution on a memory-constrained GPU, the dedicated runner
+reuses consumed state buffers. Its results are checked against ordinary
+advancement over consecutive blocks. Run inside a compute allocation with the
+same CUDA environment as the submission script:
+
+```bash
+XLA_FLAGS="${XLA_FLAGS:-} --xla_gpu_autotune_level=0" \
+  python -u tools/run_jet_interactive.py \
+  cases/HITSZWindTunnel/fv_1024x256x512_l24_jet_only_two_outlets_1s.toml \
+  --output outputs/hitsz_ln2_jet/interactive_unique_run
+```
+
+Autotuning is disabled here because the original full-size launch exhausted
+40 GB of device memory during tuning. Buffer reuse also reduces stepping
+memory without changing the physical case. This runner consumes its input
+state; callers must not reuse old state arrays after advancement.
+
+The smaller interactive variant is
+`fv_512x128x256_l24_jet_only_two_outlets_1s.toml`. It inherits the same source,
+solver, boundary conditions, 1 s duration, and 0.00025 s timestep, changing only
+the mesh to 512 x 128 x 256 (16,777,216 cells) and the output directory. Use
+that case path with the interactive runner above.
+
+The adaptive case
+`fv_512x128x256_l24_jet_only_two_outlets_adaptive_cfl0p6_1s.toml` uses RK3 with
+a convective CFL ceiling of 0.6, including projected stage velocities. Trial
+steps above the ceiling are retried from the original state at a smaller dt.
+Molecular/SGS diffusion, startup-ramp resolution, a 25% step-growth limit, and
+output-time alignment may require a lower CFL. `dt_seconds=0.01` is the maximum
+step; `steps=100` defines a 1 s target duration, not 100 accepted steps.
+Snapshots remain at 0.05 s intervals. History records the actual dt, peak-stage
+CFL, and cumulative rejected trials. The adaptive path currently supports the
+fully vaporized volume source; parcel injection remains fixed-step.
+
+Adaptive validation (2026-09-09, Raven `ravg1197`, allocation `30104293`,
+JAX 0.10.0): all three `tests/fv/test_adaptive_jet.py` checks passed on both
+CPU and A100 CUDA. These cover physical-time source forcing, snapshot timing
+and checkpoint state, and rejection of accelerating trials above CFL 0.6.
+The fixed-step two-outlet and state-donation checks also passed (five tests).
+The broader runtime suite had two failures that reproduced with the original
+observer: the atmospheric adaptive diagnostic scheduler stalls at 0.02 s,
+and the low-Mach continuation example inherits a record plane outside its
+8-cell test mesh. These are separate from the adaptive jet path.
+
+The ambient-flow variant
+`fv_512x128x256_l24_jet_inflow5_adaptive_cfl0p6_1s.toml` sets
+`physics.ambient.streamwise_velocity_m_s = 5.0` and restores
+`physics.source.streamwise_boundaries = "inflow-outflow"`. The initial air
+velocity is uniformly 5 m/s in x, the x-minus inlet holds that speed with
+ambient thermodynamic conditions, and the x-plus pressure outlet allows
+outflow. The internal nitrogen source and side/floor/ceiling boundaries
+remain those of the jet-alone case. It retains adaptive RK3, CFL 0.6,
+GMG, the 1 s target and 20 physical-time snapshots; full checkpoints are
+written every 200 accepted steps to reduce compression overhead.
