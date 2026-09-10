@@ -561,3 +561,89 @@ The listed test modules are available verification entry points; this
 documentation change does not claim a new full physics-test campaign. See the
 repository [verification guide](../../doc/verification.md) for compute-node
 execution and schema requirements.
+
+## Three-script ROCm workflow (512 × 128 × 256)
+
+From the repository root, use an environment with JAX-Wind's Python dependencies
+(Python 3.11+, or `tomli` for older Python):
+
+```bash
+# 1. Generate and validate configuration; no simulation or submission.
+bash tools/configure_hitsz_ln2.sh
+
+# 2. Submit simulations only, using the existing single-DCU ROCm launcher.
+bash tools/submit_hitsz_ln2_rocm.sh
+
+# 3. After all four stages complete, run CPU analysis separately.
+bash tools/postprocess_hitsz_ln2.sh
+```
+
+All three scripts accept the same optional setup-directory argument. The default
+is `outputs/hitsz_ln2_512_setup`. Configuration refuses to overwrite a nonempty
+setup directory. It copies the initial profile and reference data alongside
+`case.toml`, `workflow.toml`, and `validation.json`; simulation artifacts go in
+`SETUP/run/{warmup,precursor,control,main}`. Generated paths are absolute: configure
+on the cluster filesystem where the simulation will run. `PYTHON=/path/to/python`
+selects the interpreter for configuration and post-processing.
+
+| Stage | Duration | Timestep | Steps | Saved flow frames |
+|---|---:|---:|---:|---:|
+| Warmup | 1800 s | Adaptive CFL 0.6, maximum 0.01 s | Adaptive | 0 |
+| Precursor | 180 s | 0.005625 s | 32000 | 0 (inlet recorded every step) |
+| Control without LN₂ | 180 s | 0.0028125 s | 64000 | 100 |
+| Main with LN₂ | 180 s | 0.0028125 s | 64000 | 100 |
+
+The domain is 24 × 6 × 3.6 m, with cells 0.046875 × 0.046875 ×
+0.0140625 m. The R9 AD-BEM turbine is at (6, 3, 0.876) m, one quarter
+of the streamwise domain. The source is at (6.09375, 3, 0.876) m: its retained
+physical offset is now **two x cells**, just downstream of the modeled nacelle's
+0.09 m half-length. The subgrid source is spatially smeared; this placement does
+not imply that the full source support lies outside the nacelle.
+
+The source retains the earlier 0.0125 kg/s, 4 m/s, 77.34 K settings and physical
+Gaussian widths (0.30, 0.09375, 0.1125) m. Physical turbine and body smearing
+widths are also retained. This is the Boussinesq cooling/momentum model described
+above, not a resolved multiphase nitrogen flow. Both main stages start from the
+same warmup checkpoint and consume the same precursor, using two substeps per
+inlet sample, the same scalar transport and buoyancy, and identical numerical
+settings. Only the LN₂ main stage enables the cooling/momentum source.
+
+Submission reuses `tools/submit_fv_abl_rocm_single.sh`: partition
+`hx1hdnormal01`, one `dcu`, eight CPU cores, DTK 26.04, OpenMPI 4.1.5,
+conda environment `jax060`, and a ROCm device preflight. It defaults to a
+48-hour allocation; runtime and memory at this resolution have not been
+benchmarked on ROCm. Override scheduler settings after the setup argument:
+
+```bash
+CONDA_ENV=jax060 WALLTIME=72:00:00 bash tools/submit_hitsz_ln2_rocm.sh /path/to/setup
+# Continue from checkpoints after a time limit or interruption:
+RESUME=1 bash tools/submit_hitsz_ln2_rocm.sh /path/to/setup
+# Additional sbatch options:
+bash tools/submit_hitsz_ln2_rocm.sh /path/to/setup --account=YOUR_ACCOUNT
+```
+
+Do not submit simultaneous jobs writing the same setup. Resume verifies stage
+fingerprints and skips completed stages; changed physics requires a new setup.
+The submission wrapper clears inherited `MAX_STEPS` so a previous smoke-test
+setting cannot silently shorten the full workflow. Slurm logs are saved beside
+the configuration. Post-processing is never launched by the submission script.
+
+Post-processing requires NumPy, Matplotlib, and either `imageio-ffmpeg` or a
+system FFmpeg with `libx264`. It checks that all stages are complete and both
+main cases contain 100 finite frames at matching times (1.8–180 s). It averages
+the final 50 frames (91.8–180 s) at the fixed hub centerline, interpolating in z,
+and normalizes both deficits by the same hub velocity averaged over the full
+precursor recording. There is no streamwise smoothing. Outputs in
+`SETUP/run/postprocessing` are:
+
+- `centerline_deficit.png` and `.pdf`: both deficits and their difference.
+- `centerline_deficit.csv`: velocities, deficits, and difference in percentage points.
+- `summary.json`: reference speed, averaging interval, and mean change over 4–12D.
+- `control_wake.mp4` and `main_wake.mp4`: 100 frames each, 10 fps, with x-y/x-z
+  velocity and temperature-anomaly panels. Color limits are selected separately
+  per movie; use the deficit plot for quantitative comparison.
+
+No GIF is generated. The deficit measures a fixed centerline, not total wake
+momentum or recovered turbine power. Script validation includes configuration
+checks, mocked submission, and synthetic-data plot/video checks; production
+ROCm simulation remains to be run by the user.
